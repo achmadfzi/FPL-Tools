@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+data/cache.json
+data/squad.json
+data/reliability.json
+data/paststats.json
+.DS_Store
