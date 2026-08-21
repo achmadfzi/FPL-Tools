@@ -124,12 +124,18 @@ def fixture_line(p):
 
 
 def projection_explanation(p):
+    n_fx = int(p.get("n_fixtures") or 1)
+    dgw = " (DGW — 2 laga!)" if n_fx >= 2 else ""
     lines = [
-        f"Estimasi dasar (0.6×form {p.get('form', 0):.2f} + 0.4×ppg {p.get('ppg', 0):.2f}) = {p.get('own', 0):.2f}",
+        f"Estimasi dasar (0.45×form {p.get('form', 0):.2f} + 0.25×ppg {p.get('ppg', 0):.2f} + 0.30×xGI_signal {p.get('xgi_signal', 0):.2f}) = {p.get('own', 0):.2f}",
+        f"CS probability = {p.get('cs_prob', 0):.1%} (bonus tergantung posisi)",
+        f"Threat score (normalized) = {p.get('threat_norm', 0):.3f}",
         f"Faktor lawan (FDR {p.get('fdr', '-')}) = ×{p.get('fixture_mult', '-')}",
         f"Kandang/tandang = ×{p.get('home_mult', '-')}",
         f"Peluang bermain = ×{float(p.get('chance', 1)):.0%}" if p.get("chance") is not None else None,
         f"Proyeksi FPL (ep_next) = {p.get('ep_next_fpl', 0):.2f}",
+        f"Jumlah laga = {n_fx}{dgw}" if n_fx >= 2 else None,
         f"Perkiraan akhir = {p.get('proj', 0):.2f} poin",
     ]
     return "\n".join(line for line in lines if line)
+

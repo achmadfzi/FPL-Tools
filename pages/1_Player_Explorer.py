@@ -75,11 +75,12 @@ c1, c2 = st.columns([2, 1])
 with c1:
     sort_col = st.selectbox(
         "Urutkan berdasarkan",
-        ["proj", "form", "ppg", "selected_by", "price", "last_points", "last_value", "last_ppg"],
+        ["proj", "form", "ppg", "xGI_per90", "selected_by", "price", "last_points", "last_value", "last_ppg"],
         format_func=lambda c: {
             "proj": "Proyeksi poin GW ini",
             "form": "Form (5 GW)",
             "ppg": "Poin per game",
+            "xGI_per90": "xGI per 90 menit",
             "selected_by": "Kepemilikan %",
             "price": "Harga",
             "last_points": "Poin musim lalu",
@@ -92,8 +93,8 @@ with c2:
 
 view = view.sort_values(sort_col, ascending=ascending)
 
-show = view[["web_name", "team_short", "pos", "price", "proj", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance", "status", "id"]].copy()
-show.columns = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang", "Status", "id"]
+show = view[["web_name", "team_short", "pos", "price", "proj", "xGI_per90", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance", "status", "id"]].copy()
+show.columns = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi", "xGI/90", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang", "Status", "id"]
 
 pos_colors = {"GK": "#ca8a04", "DEF": "#2563eb", "MID": "#16a34a", "FWD": "#dc2626"}
 fdr_colors = {1: "#16a34a", 2: "#4ade80", 3: "#52525b", 4: "#f59e0b", 5: "#dc2626"}
@@ -120,6 +121,7 @@ styled = (
     .format(
         {
             "Proyeksi": "{:.2f}",
+            "xGI/90": "{:.2f}",
             "Poin Lalu": "{:.0f}",
             "PPG Lalu": "{:.2f}",
             "Form": "{:.2f}",
@@ -177,7 +179,8 @@ with c2:
         f"<div class='info-line'>Kepemilikan: <b>{row['selected_by']:.1f}%</b></div>",
         f"<div class='info-line'>Menit bermain: <b>{row['minutes']}</b> | Starter: <b>{row['starts']}</b></div>",
         f"<div class='info-line'>Poin total: <b>{row['total_points']}</b> | Form: <b>{row['form']:.2f}</b> | PPG: <b>{row['ppg']:.2f}</b></div>",
-        f"<div class='info-line'>xGI (GW lalu): <b>{row['xGI']:.2f}</b> | Threat: <b>{row['threat']:.0f}</b></div>",
+        f"<div class='info-line'>xGI: <b>{row['xGI']:.2f}</b> | xGI/90: <b style='color:#7c3aed'>{row['xGI_per90']:.2f}</b> | xG: <b>{row['xG']:.2f}</b> | xA: <b>{row['xA']:.2f}</b></div>",
+        f"<div class='info-line'>Threat: <b>{row['threat']:.0f}</b> | CS prob: <b style='color:#3b82f6'>{row.get('cs_prob', 0):.1%}</b></div>",
     ]
     if row["last_points"]:
         star = "" if row["last_points"] < 200 else " · <b style='color:#f59e0b'>BINTANG MUSIM LALU</b>"

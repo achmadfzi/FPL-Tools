@@ -114,10 +114,10 @@ def main():
     print(f"3. vs {len(totals)} tim acak: percentile ke-{pct:.0f}; vs strategi pandit: unggul ≥{dp_total - best_heur[1]:.2f} poin.")
     print(f"4. Rekomendasi tetap terbaik dalam {wins}/15 simulasi gangguan proyeksi ±10%.")
     print(f"\nBATAS KEJUJURAN MODEL:")
-    print(f"- 'Terbaik' berlaku TERHADAP MODEL proyeksi. Model = 0.55x(form,ppg) + 0.45x(ep_next FPL) + FDR/kandang.")
-    print(f"- Di GW1, form masih 0 sehingga model sangat bergantung pada ep_next resmi FPL (konservatif).")
+    print(f"- 'Terbaik' berlaku TERHADAP MODEL proyeksi. Model = 0.50x(form+ppg+xGI) + 0.35x(ep_next) + 0.15x(threat) + CS prob + FDR/kandang.")
+    print(f"- Di GW1, form & xGI masih 0 sehingga model sangat bergantung pada ep_next resmi FPL (konservatif).")
     print(f"- Pandit bisa punya info NON-DATA (berita cedera terbaru, rotasi, taktik) yang belum masuk API.")
-    print(f"- Bukti akhir hanya datang dari skor aktual - pantau akurasi model setelah GW berjalan.")
+    print(f"- Bukti akhir hanya datang dari skor aktual - pantau akurasi model di halaman Akurasi Model.")
 
 
 if __name__ == "__main__":

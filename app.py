@@ -24,6 +24,13 @@ autorefresh()
 gd, df = load_data()
 ev = gd.next_event
 
+# --- Auto-save projections for accuracy tracking ---
+try:
+    from fpl.accuracy import save_projections
+    save_projections(ev.get("id"), df)
+except Exception:
+    pass  # Silently ignore — accuracy tracking is optional
+
 st.markdown(
     f"""
     <div class="fpl-hero">
@@ -97,6 +104,7 @@ top = df.dropna(subset=["proj"]).sort_values("proj", ascending=False).head(10)
 rows = "<div class='fpl-card'><div style='display:flex;flex-direction:column;gap:8px'>"
 for rank, (_, p) in enumerate(top.iterrows(), 1):
     home = "Kandang" if p.get("is_home") else "Tandang"
+    dgw_tag = " <span class='fdr-badge fdr-2'>DGW</span>" if p.get("n_fixtures", 1) >= 2 else ""
     rows += (
         f'<div style="display:flex;align-items:center;gap:12px">'
         f'<span style="width:24px;font-weight:900;color:#8b93a7">{rank}</span>'
@@ -105,7 +113,7 @@ for rank, (_, p) in enumerate(top.iterrows(), 1):
         f'<span style="min-width:60px">{pos_badge_html(p["pos"])}</span>'
         f'<span style="color:#8b93a7;min-width:70px">{esc(p["team_short"])}</span>'
         f'<span style="color:#8b93a7;min-width:60px">{fmt_price(p["price"])}</span>'
-        f'<span style="color:#8b93a7;flex:1">vs {esc(p["opponent_short"])} · {home}</span>'
+        f'<span style="color:#8b93a7;flex:1">vs {esc(p["opponent_short"])} · {home}{dgw_tag}</span>'
         f'{fdr_badge_html(p.get("fdr"))}'
         f'<span style="font-weight:900;color:#00ff87;min-width:56px;text-align:right">{p["proj"]:.2f}</span>'
         f'</div>'
@@ -172,9 +180,33 @@ for rank, (_, p) in enumerate(vals.iterrows(), 1):
 vrows += "</div></div>"
 st.markdown(vrows, unsafe_allow_html=True)
 
+# --- Accuracy Summary ---
+st.markdown('<div class="section" style="font-size:.95rem">Akurasi <em>Model</em> Proyeksi</div>', unsafe_allow_html=True)
+try:
+    from fpl.accuracy import history as acc_history, suggested_weights
+
+    hist = acc_history()
+    completed = [h for h in hist if h["metrics"] is not None]
+    if completed:
+        latest = completed[-1]
+        m = latest["metrics"]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("MAE (GW terakhir)", f"{m['mae']:.2f}", f"GW {latest['gw']}")
+        c2.metric("RMSE (GW terakhir)", f"{m['rmse']:.2f}", f"{m['n']} pemain dievaluasi")
+        avg_mae = sum(h["metrics"]["mae"] for h in completed) / len(completed)
+        c3.metric("MAE rata-rata musim", f"{avg_mae:.2f}", f"{len(completed)} GW data")
+        st.caption("Lihat detail lengkap di halaman **Akurasi Model** (sidebar). MAE = rata-rata selisih absolut proyeksi vs skor aktual.")
+    else:
+        st.info(
+            "Belum ada data akurasi — proyeksi otomatis disimpan setiap GW. "
+            "Setelah GW pertama selesai, buka halaman **Akurasi Model** untuk melihat evaluasi."
+        )
+except Exception:
+    st.caption("Modul akurasi belum tersedia.")
+
 st.markdown(
     "<p style='color:#8b93a7;font-size:.72rem;margin-top:24px'>"
-    "Semua angka adalah estimasi berbasis statistik (form, FDR, kandang/tandang, proyeksi FPL). "
+    "Semua angka adalah estimasi berbasis statistik (form, xGI, FDR, kandang/tandang, CS probability, proyeksi FPL). "
     "Keputusan akhir tetap di tangan Anda.</p>",
     unsafe_allow_html=True,
 )

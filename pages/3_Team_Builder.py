@@ -197,7 +197,7 @@ if len(sel_new) == 15:
         pool_avg = df["proj"].dropna().mean() * 11
         c3.metric("vs rata-rata pool", f"{result['total'] / pool_avg * 100:.0f}%", f"rata-rata tim lain {pool_avg:.2f}")
 
-        with st.expander("Apakah 28 poin itu kecil? Konteks proyeksi GW1"):
+        with st.expander("Apakah proyeksi ini kecil? Konteks proyeksi"):
             max11 = df.dropna(subset=["proj"]).nlargest(11, "proj")["proj"].sum()
             st.markdown(
                 f"""
@@ -205,7 +205,7 @@ if len(sel_new) == 15:
                 - XI Anda {result['total']:.2f} = **{result['total'] / max11 * 100:.0f}% dari maksimum teoritis** ({max11:.2f}) yang mungkin di data GW ini.
                 - FPL's own `ep_next` for the same XI: {sum(p.get('ep_next_fpl') or 0 for p in result['xi']):.2f} — model kami sejalan.
                 - Rata-rata skor aktual FPL (~50–60/GW) sudah termasuk kapten ×2, bonus, dan form paruh musim.
-                - Di GW1 semua pemain form = 0, jadi proyeksi FPL sendiri konservatif (1.5–4 poin/pemain).
+                - Model enhanced: xGI, CS probability, dan threat score kini diperhitungkan.
                 """
             )
 
@@ -222,7 +222,16 @@ if len(sel_new) == 15:
 
         st.divider()
 
-        st.markdown('<div class="section" style="font-size:.95rem">Saran <em>Transfer</em></div>', unsafe_allow_html=True)
+        # --- Enhanced Transfer Suggestions with Multi-GW & Hit Calculator ---
+        st.markdown('<div class="section" style="font-size:.95rem">Saran <em>Transfer</em> (Multi-GW Intelligence)</div>', unsafe_allow_html=True)
+        st.caption("Transfer dinilai berdasarkan total gain 3 GW ke depan, bukan hanya 1 GW. Badge HIT menunjukkan apakah -4 hit worth it.")
+
+        from fpl.horizon import player_gw_projections
+        from fpl.transfer import hit_calculator, multi_gw_transfers, fixture_swing_badge
+
+        gw_projs = player_gw_projections(df, gd, 3)
+
+        # Also show classic 1-GW suggestions for comparison
         pool = [
             {
                 "id": p["id"],
@@ -235,25 +244,40 @@ if len(sel_new) == 15:
             }
             for p in players
         ]
-        suggestions = suggest_transfers(squad, pool, bank)
-        if suggestions:
-            for s in suggestions[:6]:
+
+        multi_suggestions = multi_gw_transfers(squad, pool, gw_projs, bank=int(bank * 10), horizon=3)
+
+        if multi_suggestions:
+            for s in multi_suggestions[:6]:
                 w = s["player"]
                 best_rep = s["reps"][0]
+                # Hit calculator
+                hit = hit_calculator(w, best_rep, gw_projs, horizon=3)
+                hit_badge = (
+                    f"<span class='fdr-badge fdr-2'>HIT ✓ net +{hit['net_after_hit']:.1f}</span>"
+                    if hit["worth_hit"]
+                    else f"<span class='fdr-badge fdr-5'>HIT ✗ net {hit['net_after_hit']:.1f}</span>"
+                )
+                # Fixture swing badge
+                swing = fixture_swing_badge(gw_projs, best_rep["id"], horizon=3)
+                swing_html = f" <span class='fdr-badge fdr-1'>{swing}</span>" if swing else ""
+
                 st.markdown(
                     f"<div class='info-line'>"
                     f"<span style='color:#f87171;font-weight:800'>{esc(w['web_name'])}</span> ({esc(w['team_short'])}, "
-                    f"proyeksi {w['proj']:.2f}) → "
+                    f"3GW {s['player_total']:.1f}) → "
                     f"<span style='color:#4ade80;font-weight:800'>{esc(best_rep['web_name'])}</span> ({esc(best_rep['team_short'])}, "
-                    f"proyeksi {best_rep['proj']:.2f}) · <b style='color:#00ff87'>potensi +{s['gain']:.2f}</b> poin"
+                    f"3GW {best_rep['proj_total']:.1f}) · "
+                    f"<b style='color:#00ff87'>+{s['gain']:.2f} (3GW)</b> · "
+                    f"GW ini +{s['gain_1gw']:.2f} · {hit_badge}{swing_html}"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
-                alternatif = ", ".join(f"{r['web_name']} ({r['proj']:.1f})" for r in s["reps"][1:])
+                alternatif = ", ".join(f"{r['web_name']} ({r['proj_total']:.1f})" for r in s["reps"][1:])
                 if alternatif:
                     st.caption(f"Alternatif: {alternatif}")
         else:
-            st.info("Tidak ada transfer yang menguntungkan berdasarkan proyeksi saat ini.")
+            st.info("Tidak ada transfer yang menguntungkan berdasarkan proyeksi 3 GW ke depan.")
 
         st.divider()
         st.markdown('<div class="section" style="font-size:.95rem">Validasi <em>Rekomendasi</em></div>', unsafe_allow_html=True)
@@ -301,8 +325,8 @@ if len(sel_new) == 15:
                 for name, delta in sorted(res["heur"].items(), key=lambda kv: kv[1]):
                     st.write(f"{name}: {delta:+.2f} poin vs skuad Anda")
             st.caption(
-                "Batas: optimum berlaku terhadap model proyeksi. Model mengandalkan ep_next FPL saat form masih 0 (GW1). "
-                "Pandit bisa punya info non-data (berita cedera/rotasi). Bukti final = skor aktual GW."
+                "Batas: optimum berlaku terhadap model proyeksi. Model kini memperhitungkan xGI, CS probability, "
+                "threat score, dan DGW multiplier. Pandit bisa punya info non-data (berita cedera/rotasi). Bukti final = skor aktual GW."
             )
 
         st.divider()
@@ -311,9 +335,8 @@ if len(sel_new) == 15:
             "XI boleh dirotasi GRATIS antar Gameweek. Transfer hanya dibutuhkan jika pemain harus dikeluarkan "
             "dari 15 skuad — rencana ini memastikan skuad Anda tetap kuat 3 GW tanpa transfer."
         )
-        from fpl.horizon import player_gw_projections, risky_players, squad_plan
+        from fpl.horizon import risky_players, squad_plan
 
-        gw_projs = player_gw_projections(df, gd, 3)
         plans = squad_plan(squad, gw_projs, 3)
         cur = gd.next_event["id"]
         total_3gw = sum(p["total"] for p in plans)
@@ -343,7 +366,7 @@ if len(sel_new) == 15:
         for p, fut in risky:
             st.write(f":orange[**{p['web_name']}**] ({p['team_short']}) — proyeksi GW2+GW3 hanya {fut:.2f} poin")
         st.caption(
-            "Estimasi GW2/3 memakai kualitas pemain saat ini (form/ppg/ep_next) × FDR lawan GW tersebut × kandang/tandang "
+            "Estimasi GW2/3 memakai kualitas pemain saat ini (form/ppg/xGI/ep_next) × FDR lawan GW tersebut × kandang/tandang "
             "(×1.9 bila DGW). Akurasi meningkat seiring musim berjalan."
         )
     else:

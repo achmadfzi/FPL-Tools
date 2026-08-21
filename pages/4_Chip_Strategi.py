@@ -9,9 +9,12 @@ from fpl.strategy import (
     bench_players,
     best_player_per_team,
     calendar,
+    chip_sequence,
+    fh_estimate,
     gw_summary,
     squad_from_ids,
     tc_estimate,
+    wc_estimate,
 )
 from fpl.ui import apply_theme, autorefresh, esc, load_data, player_card_html
 from fpl.utils import fmt_price
@@ -27,8 +30,8 @@ bpt = best_player_per_team(df)
 
 st.markdown('<div class="section">Chip <em>Strategi</em></div>', unsafe_allow_html=True)
 st.caption(
-    "Kapan waktu terbaik menggunakan Triple Captain (TC) dan Bench Boost (BB), "
-    "berbasis jadwal Double Gameweek (DGW), Blank GW, dan proyeksi poin."
+    "Kapan waktu terbaik menggunakan Triple Captain (TC), Bench Boost (BB), "
+    "Wildcard (WC), dan Free Hit (FH) — berbasis jadwal DGW, BGW, dan proyeksi poin."
 )
 
 with st.expander("Aturan chip yang perlu diketahui"):
@@ -36,10 +39,11 @@ with st.expander("Aturan chip yang perlu diketahui"):
         """
         - **Triple Captain (TC)**: poin kapten dikali 3 (bukan 2). Bisa dipakai 1x per musim.
         - **Bench Boost (BB)**: poin 4 pemain cadangan ikut dihitung. Bisa dipakai 1x per musim.
+        - **Wildcard (WC)**: rebuild seluruh skuad 15 pemain tanpa penalti transfer. Bisa dipakai 2x per musim (1x per paruh).
+        - **Free Hit (FH)**: rebuild tim untuk 1 GW saja, lalu kembali ke skuad semula. Bisa dipakai 1x per musim.
         - TC dan BB **tidak bisa** dipakai bersamaan di Gameweek yang sama.
-        - Chip tidak bisa dipakai setelah deadline GW berjalan.
         - **Double Gameweek (DGW)**: tim bermain 2 laga dalam 1 GW — kunci utama strategi TC & BB.
-        - **Blank GW (BGW)**: tim tidak bertanding — hindari chip di GW ini.
+        - **Blank GW (BGW)**: tim tidak bertanding — kunci utama strategi FH.
         """
     )
 
@@ -63,13 +67,31 @@ with st.expander("Kalender DGW / Blank GW (jadwal penuh musim ini)"):
             bgw = ", ".join(gd.teams_by_id[t]["short_name"] for t in g["bgw_ids"])
             st.write(f"GW {g['event']}: DGW = {dgw or '-'} | BGW = {bgw or '-'}")
 
+# --- Skor Kelayakan Semua Chip ---
 st.markdown('<div class="section">Skor <em>Kelayakan</em> Chip per Gameweek</div>', unsafe_allow_html=True)
 
 rows = []
+tc_all = []
+bb_all = []
+wc_all = []
+fh_all = []
+
 for g in cal:
     tc = tc_estimate(g, bpt)
     bb = bb_estimate(g, squad)
+    wc = wc_estimate(g, gd, df, squad if has_squad else None)
+    fh = fh_estimate(g, gd, df)
     deadline = next((e["deadline_time"][:10] for e in gd.events if e["id"] == g["event"]), "-")
+
+    if tc:
+        tc_all.append({"gw": g["event"], "score": tc["score"], "reason": f"Kapten: {tc['player']}"})
+    if bb:
+        bb_all.append({"gw": g["event"], "score": bb["score"], "reason": f"{bb['dgw_count']} pemain DGW"})
+    if wc:
+        wc_all.append({"gw": g["event"], "score": wc["score"], "reason": f"{wc['future_easy_fixtures']} laga mudah"})
+    if fh:
+        fh_all.append({"gw": g["event"], "score": fh["score"], "reason": f"{fh['n_blank_teams']} tim blank"})
+
     rows.append(
         {
             "GW": g["event"],
@@ -80,6 +102,8 @@ for g in cal:
             "Laga Sulit": g["hard"],
             "TC": tc["score"] if tc else None,
             "BB": bb["score"] if bb else None,
+            "WC": wc["score"] if wc else None,
+            "FH": fh["score"] if fh else None,
         }
     )
 cal_df = pd.DataFrame(rows)
@@ -93,22 +117,52 @@ def highlight_max(s):
 
 
 styled_cal = (
-    cal_df.style.map(lambda v: "color:#8b93a7" if pd.isna(v) else "", subset=["TC", "BB"])
+    cal_df.style.map(lambda v: "color:#8b93a7" if pd.isna(v) else "", subset=["TC", "BB", "WC", "FH"])
     .apply(highlight_max, subset=["TC"])
     .apply(highlight_max, subset=["BB"])
+    .apply(highlight_max, subset=["WC"])
+    .apply(highlight_max, subset=["FH"])
     .map(lambda v: "color:#4ade80;font-weight:800", subset=["Laga Mudah"])
     .map(lambda v: "color:#f87171;font-weight:800", subset=["Laga Sulit"])
-    .format({"TC": "{:.2f}", "BB": "{:.2f}"})
+    .format({"TC": "{:.2f}", "BB": "{:.2f}", "WC": "{:.2f}", "FH": "{:.2f}"})
     .hide(axis="index")
 )
 st.dataframe(styled_cal, use_container_width=True)
 st.caption(
-    "TC skor = estimasi poin kapten terbaik di GW itu (x1.9 bila timnya DGW). "
-    "BB skor = estimasi poin 4 pemain cadangan (x1.8 bila DGW). Nilai hijau = GW terbaik."
+    "TC skor = estimasi poin kapten terbaik (×1.9 bila DGW). "
+    "BB skor = estimasi poin 4 cadangan (×1.8 bila DGW). "
+    "WC skor = value rebuild berdasarkan fixture swing + DGW. "
+    "FH skor = value free hit berdasarkan jumlah tim blank. "
+    "Nilai hijau = GW terbaik per chip."
 )
+
+# --- Chip Sequence Plan ---
+st.markdown('<div class="section">Rencana <em>Chip</em> Musim Ini</div>', unsafe_allow_html=True)
+st.caption("Urutan optimal penggunaan 4 chip berdasarkan jadwal dan proyeksi saat ini.")
+
+plan = chip_sequence(cal, tc_all, bb_all, wc_all, fh_all)
+if plan:
+    chip_colors = {"TC": "#00ff87", "BB": "#f59e0b", "WC": "#7c3aed", "FH": "#3b82f6"}
+    chip_names = {"TC": "Triple Captain", "BB": "Bench Boost", "WC": "Wildcard", "FH": "Free Hit"}
+    plan_html = '<div class="fpl-card"><div style="display:flex;gap:16px;flex-wrap:wrap">'
+    for p in plan:
+        color = chip_colors.get(p["chip"], "#8b93a7")
+        plan_html += (
+            f'<div style="background:#0d1117;border:2px solid {color};border-radius:14px;padding:14px 20px;text-align:center;min-width:140px">'
+            f'<div style="font-size:.7rem;color:{color};font-weight:900;letter-spacing:2px">{chip_names.get(p["chip"], p["chip"])}</div>'
+            f'<div style="font-size:1.6rem;font-weight:900;color:#fff;margin:4px 0">GW {p["gw"]}</div>'
+            f'<div style="font-size:.82rem;color:#8b93a7">skor {p["score"]:.2f}</div>'
+            f'</div>'
+        )
+    plan_html += '</div></div>'
+    st.markdown(plan_html, unsafe_allow_html=True)
+    st.caption("Rencana ini akan berubah seiring data baru tersedia — periksa kembali setiap menjelang deadline.")
+else:
+    st.info("Belum cukup data untuk menyusun rencana chip.")
 
 st.divider()
 
+# --- Detail per Chip (4 columns) ---
 c1, c2 = st.columns(2)
 
 with c1:
@@ -226,6 +280,92 @@ with c2:
             "Simpan skuad 15 pemain dulu (Team Builder > Simpan Tim, atau jalankan `python recommend.py`) "
             "agar analisis BB bisa dihitung dari skuad Anda."
         )
+
+st.divider()
+
+# --- Wildcard & Free Hit (NEW) ---
+c1, c2 = st.columns(2)
+
+with c1:
+    st.markdown('<div class="section" style="font-size:1rem">Wildcard <em>(WC)</em></div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="fpl-card">
+          <h3>Kapan WC paling bernilai?</h3>
+          <div class="card-sub">WC memungkinkan rebuild total tanpa penalti transfer. Gunakan saat:</div>
+          <div class="info-line">1. Banyak pemain skuad <b>underperform</b> atau cedera.</div>
+          <div class="info-line">2. Ada <b>fixture swing besar</b> — banyak tim beralih dari lawan sulit ke mudah.</div>
+          <div class="info-line">3. Menjelang <b>DGW</b> — rebuild untuk memaksimalkan pemain DGW.</div>
+          <div class="info-line">4. <b>Paruh musim</b> — WC kedua tersedia setelah GW 20.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    wc_rows = []
+    for g in cal:
+        w = wc_estimate(g, gd, df, squad if has_squad else None)
+        if w:
+            wc_rows.append({
+                "GW": g["event"],
+                "Laga Mudah (3GW)": w["future_easy_fixtures"],
+                "Tim DGW": w["dgw_teams"],
+                "Underperform": len(w["underperformers"]),
+                "WC Skor": w["score"],
+            })
+    if wc_rows:
+        wc_df = pd.DataFrame(wc_rows).sort_values("WC Skor", ascending=False).head(5)
+        st.dataframe(
+            wc_df.style.apply(highlight_max, subset=["WC Skor"]).format({"WC Skor": "{:.2f}"}).hide(axis="index"),
+            use_container_width=True,
+        )
+        best_wc = wc_df.iloc[0]
+        st.success(
+            f"Rekomendasi: pertimbangkan WC di **GW {int(best_wc['GW'])}** — "
+            f"{int(best_wc['Laga Mudah (3GW)'])} laga mudah dalam 3 GW, "
+            f"{int(best_wc['Underperform'])} pemain underperform. Skor WC: {best_wc['WC Skor']:.2f}."
+        )
+
+with c2:
+    st.markdown('<div class="section" style="font-size:1rem">Free Hit <em>(FH)</em></div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="fpl-card">
+          <h3>Kapan FH paling bernilai?</h3>
+          <div class="card-sub">FH memungkinkan tim berbeda untuk 1 GW saja. Gunakan saat:</div>
+          <div class="info-line">1. <b>Blank Gameweek (BGW)</b> — banyak tim tidak bermain.</div>
+          <div class="info-line">2. Banyak pemain skuad Anda <b>tidak bertanding</b> di GW itu.</div>
+          <div class="info-line">3. Tidak ada DGW — simpan TC/BB untuk DGW, pakai FH di BGW.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    fh_rows = []
+    for g in cal:
+        fh = fh_estimate(g, gd, df)
+        if fh:
+            fh_rows.append({
+                "GW": g["event"],
+                "Tim Blank": fh["n_blank_teams"],
+                "BGW?": "Ya" if fh["is_bgw"] else "Tidak",
+                "FH Skor": fh["score"],
+            })
+    if fh_rows:
+        fh_df = pd.DataFrame(fh_rows).sort_values("FH Skor", ascending=False).head(5)
+        st.dataframe(
+            fh_df.style.apply(highlight_max, subset=["FH Skor"]).format({"FH Skor": "{:.2f}"}).hide(axis="index"),
+            use_container_width=True,
+        )
+        best_fh = fh_df.iloc[0]
+        if best_fh["Tim Blank"] > 0:
+            st.success(
+                f"Rekomendasi: gunakan FH di **GW {int(best_fh['GW'])}** — "
+                f"{int(best_fh['Tim Blank'])} tim tidak bermain (Blank GW). Skor FH: {best_fh['FH Skor']:.2f}."
+            )
+        else:
+            st.info(
+                "Belum ada Blank GW terdeteksi — simpan Free Hit sampai BGW muncul. "
+                "FPL biasanya mengumumkan BGW mendekati paruh musim kedua."
+            )
 
 st.divider()
 st.markdown(

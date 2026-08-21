@@ -71,6 +71,7 @@ class GameData:
         self.events = bootstrap["events"]
         self.next_event = self._next_event()
         self.fixtures_by_team = self._fixtures_by_team()
+        self.team_strength = self._team_strength()
         self.players = self._build_players()
 
     def _next_event(self):
@@ -88,24 +89,80 @@ class GameData:
         for f in self.fixtures:
             if f.get("event") != event_id:
                 continue
-            out[f["team_h"]] = {
+            out.setdefault(f["team_h"], []).append({
                 "opponent": f["team_a"],
                 "difficulty": f["team_h_difficulty"],
                 "is_home": True,
                 "kickoff": f.get("kickoff_time"),
-            }
-            out[f["team_a"]] = {
+            })
+            out.setdefault(f["team_a"], []).append({
                 "opponent": f["team_h"],
                 "difficulty": f["team_a_difficulty"],
                 "is_home": False,
                 "kickoff": f.get("kickoff_time"),
+            })
+        return out
+
+    def _team_strength(self):
+        """Extract team strength ratings for CS probability estimation."""
+        out = {}
+        for t in self.bootstrap["teams"]:
+            # FPL provides strength_attack/defence_home/away on 1-5 scale (roughly)
+            out[t["id"]] = {
+                "attack_home": t.get("strength_attack_home", 1200),
+                "attack_away": t.get("strength_attack_away", 1200),
+                "defence_home": t.get("strength_defence_home", 1200),
+                "defence_away": t.get("strength_defence_away", 1200),
+                "overall": t.get("strength_overall_home", 1200),
+                "short_name": t["short_name"],
             }
         return out
+
+    def cs_probability(self, team_id, opponent_id, is_home, fdr=None):
+        """Estimate clean sheet probability based on team strength ratings.
+
+        Uses ratio of defending team's defence strength vs opponent's attack strength.
+        Falls back to FDR-based estimation when strength data is unavailable (e.g. GW1).
+        Returns a value between 0.05 and 0.55.
+        """
+        ts = self.team_strength
+        if team_id not in ts or opponent_id not in ts:
+            return self._cs_from_fdr(fdr, is_home)
+
+        if is_home:
+            defence = ts[team_id]["defence_home"]
+            attack = ts[opponent_id]["attack_away"]
+        else:
+            defence = ts[team_id]["defence_away"]
+            attack = ts[opponent_id]["attack_home"]
+
+        # If strength values are 0 (season start), fall back to FDR
+        if defence <= 0 or attack <= 0:
+            return self._cs_from_fdr(fdr, is_home)
+
+        # Ratio > 1 means defence stronger than opponent attack → higher CS chance
+        ratio = defence / attack
+
+        # Map ratio to probability: ratio=1.0 → ~0.30, ratio=1.2 → ~0.42, ratio=0.8 → ~0.18
+        cs_prob = 0.30 * ratio
+        return max(0.05, min(0.55, cs_prob))
+
+    @staticmethod
+    def _cs_from_fdr(fdr, is_home):
+        """Estimate CS probability from FDR when strength data unavailable."""
+        fdr_cs = {1: 0.40, 2: 0.35, 3: 0.28, 4: 0.20, 5: 0.15}
+        base = fdr_cs.get(fdr, 0.28)
+        # Home teams keep clean sheets ~5% more often
+        return max(0.05, min(0.55, base + (0.05 if is_home else 0.0)))
 
     def _build_players(self):
         players = []
         for p in self.bootstrap["elements"]:
             team = self.teams_by_id[p["team"]]
+            minutes = p.get("minutes") or 0
+            xgi = float(p.get("expected_goal_involvements") or 0)
+            # Compute xGI per 90 minutes (avoid division by zero)
+            xgi_per90 = round(xgi / (minutes / 90.0), 2) if minutes >= 90 else 0.0
             players.append(
                 {
                     "id": p["id"],
@@ -124,13 +181,14 @@ class GameData:
                     "news": p.get("news") or "",
                     "ep_next": float(p.get("ep_next") or 0),
                     "chance": p.get("chance_of_playing_next_round"),
-                    "xGI": float(p.get("expected_goal_involvements") or 0),
+                    "xGI": xgi,
+                    "xGI_per90": xgi_per90,
                     "xG": float(p.get("expected_goals") or 0),
                     "xA": float(p.get("expected_assists") or 0),
                     "threat": float(p.get("threat") or 0),
                     "creativity": float(p.get("creativity") or 0),
                     "influence": float(p.get("influence") or 0),
-                    "minutes": p.get("minutes") or 0,
+                    "minutes": minutes,
                     "starts": p.get("starts") or 0,
                     "photo_code": p.get("photo") or "",
                     "price_change": p.get("cost_change_start") or 0,
@@ -139,7 +197,13 @@ class GameData:
         return players
 
     def fixture_for_team(self, team_id):
-        return self.fixtures_by_team.get(team_id)
+        """Return first fixture for team in next GW (backward compat)."""
+        fxs = self.fixtures_by_team.get(team_id, [])
+        return fxs[0] if fxs else None
+
+    def fixture_list_for_team(self, team_id):
+        """Return ALL fixtures for team in next GW (supports DGW)."""
+        return self.fixtures_by_team.get(team_id, [])
 
     def fixture_for_team_event(self, team_id, event_id):
         for f in self.fixtures:
@@ -150,6 +214,18 @@ class GameData:
             if f["team_a"] == team_id:
                 return {"opponent": f["team_h"], "difficulty": f["team_a_difficulty"], "is_home": False, "kickoff": f.get("kickoff_time")}
         return None
+
+    def fixture_list_for_team_event(self, team_id, event_id):
+        """Return ALL fixtures for team in a given event (supports DGW)."""
+        out = []
+        for f in self.fixtures:
+            if f.get("event") != event_id:
+                continue
+            if f["team_h"] == team_id:
+                out.append({"opponent": f["team_a"], "difficulty": f["team_h_difficulty"], "is_home": True, "kickoff": f.get("kickoff_time")})
+            if f["team_a"] == team_id:
+                out.append({"opponent": f["team_h"], "difficulty": f["team_a_difficulty"], "is_home": False, "kickoff": f.get("kickoff_time")})
+        return out
 
     def fixtures_by_event_map(self):
         out = {}
@@ -165,8 +241,36 @@ class GameData:
                 counts[f["team_a"]] = counts.get(f["team_a"], 0) + 1
         return counts
 
+    def fixture_ticker(self, n_gws=6):
+        """Return FDR for next N gameweeks per team. Used for fixture swing analysis.
+
+        Returns: {team_id: [{"gw": N, "opponent": id, "fdr": int, "is_home": bool}, ...]}
+        """
+        cur = self.next_event["id"]
+        ticker = {t: [] for t in self.teams_by_id}
+        for gw in range(cur, cur + n_gws):
+            for f in self.fixtures:
+                if f.get("event") != gw:
+                    continue
+                ticker[f["team_h"]].append({
+                    "gw": gw,
+                    "opponent": f["team_a"],
+                    "opponent_short": self.teams_by_id[f["team_a"]]["short_name"],
+                    "fdr": f["team_h_difficulty"],
+                    "is_home": True,
+                })
+                ticker[f["team_a"]].append({
+                    "gw": gw,
+                    "opponent": f["team_h"],
+                    "opponent_short": self.teams_by_id[f["team_h"]]["short_name"],
+                    "fdr": f["team_a_difficulty"],
+                    "is_home": False,
+                })
+        return ticker
+
 
 def get_game_data(force=False):
     bootstrap = get_bootstrap(force=force)
     fixtures = get_fixtures(force=force)
     return GameData(bootstrap, fixtures)
+

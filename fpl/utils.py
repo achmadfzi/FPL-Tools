@@ -16,6 +16,15 @@ FDR_COLORS = {1: "green", 2: "lightgreen", 3: "gray", 4: "orange", 5: "red"}
 
 FDR_MULT = {1: 1.12, 2: 1.06, 3: 1.0, 4: 0.92, 5: 0.85}
 
+# Clean sheet points per position (FPL rules)
+CS_POINTS = {"GK": 4, "DEF": 4, "MID": 1, "FWD": 0}
+
+# Threat score normalization — typical top threat is ~1200 over a season (~32 per GW)
+THREAT_NORM_FACTOR = 40.0
+
+# Baseline xGI per 90 mins for normalization (top attackers ~0.8, average ~0.25)
+XGI_PER90_BASELINE = 0.8
+
 POSITION_COLORS = {"GK": "yellow", "DEF": "blue", "MID": "green", "FWD": "red"}
 
 

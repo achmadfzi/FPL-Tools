@@ -5,29 +5,57 @@ from .utils import FDR_MULT
 
 
 def future_proj(row, gd, event_id):
+    """Project a player's points for a future GW using current quality signals."""
     team = int(row["team"])
     counts = gd.team_fixture_counts(event_id)
     n = counts.get(team, 0)
     if n == 0:
         return None
-    base = 0.6 * float(row["form"] or 0) + 0.4 * float(row["ppg"] or 0)
+
+    # Use enhanced base: form + ppg + xGI signal (from current data)
+    form = float(row["form"] or 0)
+    ppg = float(row["ppg"] or 0)
+    xgi_signal = float(row.get("xgi_signal") or 0)
+    base = 0.45 * form + 0.25 * ppg + 0.30 * xgi_signal
+
     if base <= 0:
-        base = float(row["ep_next_fpl"] or 0)
+        base = float(row.get("ep_next_fpl") or 0)
     if base <= 0:
-        base = float(row["proj"] or 0)
+        base = float(row.get("proj") or 0)
     if base <= 0:
         return None
-    fx = gd.fixture_for_team_event(team, event_id)
-    if fx is None:
-        return None
-    mult = FDR_MULT.get(fx["difficulty"], 1.0)
-    mult *= 1.08 if fx["is_home"] else 0.93
-    if n == 2:
-        mult *= 1.9
+
+    # Get fixture details for this future GW
+    fixtures = gd.fixture_list_for_team_event(team, event_id)
+    if not fixtures:
+        fx = gd.fixture_for_team_event(team, event_id)
+        if fx is None:
+            return None
+        fixtures = [fx]
+
+    total = 0.0
+    for fx in fixtures:
+        mult = FDR_MULT.get(fx["difficulty"], 1.0)
+        mult *= 1.08 if fx["is_home"] else 0.93
+
+        # CS bonus for defenders/keepers
+        pos = row.get("pos", "MID")
+        if pos in ("GK", "DEF"):
+            cs_prob = gd.cs_probability(team, fx["opponent"], fx["is_home"], fdr=fx["difficulty"])
+            cs_bonus = cs_prob * 4 * 0.15
+        elif pos == "MID":
+            cs_prob = gd.cs_probability(team, fx["opponent"], fx["is_home"], fdr=fx["difficulty"])
+            cs_bonus = cs_prob * 1 * 0.15
+        else:
+            cs_bonus = 0.0
+
+        total += (base + cs_bonus) * mult
+
     chance = row.get("chance")
     if chance is not None:
-        mult *= max(float(chance), 0.0)
-    return round(base * mult, 2)
+        total *= max(float(chance), 0.0)
+
+    return round(total, 2)
 
 
 def horizon_df(gd, df, horizon=3):

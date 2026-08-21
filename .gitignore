@@ -4,4 +4,5 @@ data/cache.json
 data/squad.json
 data/reliability.json
 data/paststats.json
+data/accuracy.json
 .DS_Store
