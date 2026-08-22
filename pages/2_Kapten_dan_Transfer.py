@@ -42,40 +42,39 @@ st.caption("Jadwal lawan 6 GW ke depan per tim, diurutkan dari run paling mudah.
 from fpl.transfer import fixture_ticker_table
 
 ticker_rows, cur_gw = fixture_ticker_table(gd, n_gws=6)
-fdr_colors = {1: "#16a34a", 2: "#4ade80", 3: "#52525b", 4: "#f59e0b", 5: "#dc2626"}
+from fpl.ui import FDR_CELL
 
-ticker_html = '<div class="fpl-card" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.76rem">'
+ticker_html = '<div class="fpl-card" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.8rem">'
 # Header
-ticker_html += '<tr style="border-bottom:1px solid #232b3b">'
-ticker_html += '<th style="text-align:left;padding:6px 8px;color:#8b93a7">Tim</th>'
+ticker_html += '<tr style="border-bottom:1px solid #e2e8f0;background:#f8fafc">'
+ticker_html += '<th style="text-align:left;padding:8px 10px;color:#475569;font-weight:500">Tim</th>'
 for i in range(6):
-    ticker_html += f'<th style="text-align:center;padding:6px 4px;color:#8b93a7">GW {cur_gw + i}</th>'
-ticker_html += f'<th style="text-align:center;padding:6px 4px;color:#8b93a7">Avg</th>'
+    ticker_html += f'<th style="text-align:center;padding:8px 6px;color:#475569;font-weight:500">GW {cur_gw + i}</th>'
+ticker_html += f'<th style="text-align:center;padding:8px 6px;color:#475569;font-weight:500">Avg</th>'
 ticker_html += '</tr>'
 
 for row in ticker_rows:
-    ticker_html += '<tr style="border-bottom:1px solid #1a1f2e">'
-    ticker_html += f'<td style="padding:5px 8px;font-weight:700;color:#fff">{esc(row["team_short"])}</td>'
+    ticker_html += '<tr style="border-bottom:1px solid #f1f5f9">'
+    ticker_html += f'<td style="padding:6px 10px;font-weight:500;color:#0f172a">{esc(row["team_short"])}</td>'
     for i in range(6):
         gw = cur_gw + i
         cell = row.get(f"gw_{gw}", {"text": "-", "fdr": None})
         fdr = cell.get("fdr")
-        bg = fdr_colors.get(fdr, "#1a1f2e")
-        text_color = "#fff" if fdr in (1, 3, 5) else "#052e16" if fdr == 2 else "#451a03"
+        bg, text_color = FDR_CELL.get(fdr, ("#f8fafc", "#475569"))
         dgw_mark = " ⚡" if cell.get("dgw") else ""
-        ticker_html += f'<td style="text-align:center;padding:4px 3px;background:{bg};color:{text_color};font-weight:700;font-size:.68rem">{esc(cell["text"])}{dgw_mark}</td>'
+        ticker_html += f'<td style="text-align:center;padding:5px 4px;background:{bg};color:{text_color};font-weight:500;font-size:.7rem">{esc(cell["text"])}{dgw_mark}</td>'
     # Average FDR
     avg = row.get("avg_fdr", 3.0)
-    avg_color = "#4ade80" if avg <= 2.5 else "#f59e0b" if avg <= 3.5 else "#f87171"
-    ticker_html += f'<td style="text-align:center;padding:4px;color:{avg_color};font-weight:900">{avg:.1f}</td>'
+    avg_color = "#15803d" if avg <= 2.5 else "#d97706" if avg <= 3.5 else "#b91c1c"
+    ticker_html += f'<td style="text-align:center;padding:5px;color:{avg_color};font-weight:600">{avg:.1f}</td>'
     ticker_html += '</tr>'
 
 ticker_html += '</table></div>'
 st.markdown(ticker_html, unsafe_allow_html=True)
-st.caption("⚡ = Double Gameweek. Tim di atas memiliki run lawan paling mudah → prioritas transfer masuk.")
+st.caption("⚡ = Double Gameweek. Tim di atas memiliki jadwal lawan paling ringan.")
 
 st.markdown('<div class="section">Value <em>Picks</em> — Poin Proyeksi per £1 Juta</div>', unsafe_allow_html=True)
-st.caption("Pemain murah dengan proyeksi tertinggi: paling efisien untuk budget Anda.")
+st.caption("Pemain murah dengan efisiensi proyeksi poin tertinggi terhadap budget.")
 vps = value_picks(available, n=40)
 for pos in ("GK", "DEF", "MID", "FWD"):
     subset = [p for p in vps if p["pos"] == pos][:5]
@@ -85,15 +84,17 @@ for pos in ("GK", "DEF", "MID", "FWD"):
         for p in subset:
             st.markdown(
                 f"<div class='info-line'>"
-                f"<b style='color:#fff'>{esc(p['web_name'])}</b> ({esc(p['team_short'])}) · {fmt_price(p['price'])} · "
-                f"proyeksi <b style='color:#00ff87'>{p['proj']:.2f}</b> · value <b style='color:#f59e0b'>{p['value']:.2f}</b> poin/£1jt"
+                f"<span style='color:#0f172a;font-weight:500'>{esc(p['web_name'])}</span> "
+                f"<span style='color:#64748b'>({esc(p['team_short'])}) · {fmt_price(p['price'])} · "
+                f"proyeksi <span style='color:#37003c;font-weight:600'>{p['proj']:.2f}</span> · "
+                f"value <span style='color:#d97706;font-weight:500'>{p['value']:.2f}</span> pts/£1jt</span>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
 
 # --- Differential Picks (NEW) ---
 st.markdown('<div class="section">Differential <em>Picks</em> — Kepemilikan Rendah, Proyeksi Tinggi</div>', unsafe_allow_html=True)
-st.caption("Pemain yang dimiliki < 5% manajer tapi proyeksinya tinggi — bisa jadi senjata rahasia untuk naik rank di liga Anda.")
+st.caption("Pemain dengan kepemilikan komunitas < 5% namun memiliki potensi poin tinggi.")
 
 from fpl.transfer import differential_picks
 
@@ -116,9 +117,12 @@ if diffs:
         with st.expander(f"+ {len(diffs) - 5} differential lainnya"):
             for p in diffs[5:]:
                 st.markdown(
-                    f"<div class='info-line'><b style='color:#fff'>{esc(p['web_name'])}</b> ({esc(p['team_short'])}, {p['pos']}) · "
-                    f"{fmt_price(p['price'])} · proyeksi <b style='color:#00ff87'>{p['proj']:.2f}</b> · "
-                    f"ownership <b style='color:#f59e0b'>{p['selected_by']:.1f}%</b></div>",
+                    f"<div class='info-line'>"
+                    f"<span style='color:#0f172a;font-weight:500'>{esc(p['web_name'])}</span> "
+                    f"<span style='color:#64748b'>({esc(p['team_short'])}, {p['pos']}) · "
+                    f"{fmt_price(p['price'])} · proyeksi <span style='color:#37003c;font-weight:600'>{p['proj']:.2f}</span> · "
+                    f"ownership <span style='color:#d97706;font-weight:500'>{p['selected_by']:.1f}%</span></span>"
+                    f"</div>",
                     unsafe_allow_html=True,
                 )
 else:
@@ -127,15 +131,15 @@ else:
 st.markdown('<div class="section">Pemain <em>Berisiko</em></div>', unsafe_allow_html=True)
 c1, c2 = st.columns(2)
 with c1:
-    st.markdown('<div class="fpl-card"><h3>Cedera / Peluang Main Rendah</h3><div class="card-sub">Paling banyak dipegang manajer lain — waspadai!</div>', unsafe_allow_html=True)
+    st.markdown('<div class="fpl-card"><h3>Cedera / Peluang Main Rendah</h3><div class="card-sub">Banyak dimiliki manajer lain — waspadai potensi rotasi/absen.</div>', unsafe_allow_html=True)
     risky = risk_players(players)
     if risky:
         for p in risky[:8]:
             chance = p.get("chance")
             peluang = f"{float(chance):.0f}%" if chance is not None else "?"
             st.markdown(
-                f"<div class='info-line'><span style='color:#f87171;font-weight:800'>{esc(p['web_name'])}</span> "
-                f"({esc(p['team_short'])}) · {p['selected_by']:.1f}% kepemilikan · peluang main {peluang}</div>",
+                f"<div class='info-line'><span style='color:#dc2626;font-weight:500'>{esc(p['web_name'])}</span> "
+                f"<span style='color:#64748b'>({esc(p['team_short'])}) · {p['selected_by']:.1f}% kepemilikan · peluang {peluang}</span></div>",
                 unsafe_allow_html=True,
             )
             if p["news"]:
@@ -144,13 +148,13 @@ with c1:
         st.info("Tidak ada pemain berisiko terdeteksi.")
     st.markdown("</div>", unsafe_allow_html=True)
 with c2:
-    st.markdown('<div class="fpl-card"><h3>Mahal tapi Proyeksi Rendah</h3><div class="card-sub">Harga tinggi, ekspektasi poin GW ini rendah.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="fpl-card"><h3>Mahal tapi Proyeksi Rendah</h3><div class="card-sub">Harga premium namun ekspektasi poin GW ini terbatas.</div>', unsafe_allow_html=True)
     over = overpriced_players(players)
     if over:
         for p in over[:8]:
             st.markdown(
-                f"<div class='info-line'><span style='color:#fbbf24;font-weight:800'>{esc(p['web_name'])}</span> "
-                f"({esc(p['team_short'])}) · {fmt_price(p['price'])} · proyeksi hanya {p['proj']:.2f}</div>",
+                f"<div class='info-line'><span style='color:#d97706;font-weight:500'>{esc(p['web_name'])}</span> "
+                f"<span style='color:#64748b'>({esc(p['team_short'])}) · {fmt_price(p['price'])} · proyeksi {p['proj']:.2f}</span></div>",
                 unsafe_allow_html=True,
             )
     else:
@@ -165,8 +169,8 @@ with st.expander("Top 10 poin musim lalu + proyeksi sekarang", expanded=True):
         double = " · <b style='color:#00ff87'>DOUBLE SIGNAL</b>" if p["proj"] and p["proj"] >= 2.2 else ""
         st.markdown(
             f"<div class='info-line'><b style='color:#f59e0b'>{int(p['last_points'])} pts</b> — "
-            f"<b style='color:#fff'>{esc(p['web_name'])}</b> ({esc(p['team_short'])}, {p['pos']}, {fmt_price(p['price'])}) · "
-            f"ppg lalu {p['last_ppg']:.2f} · proyeksi GW ini <b style='color:#00ff87'>{p['proj']:.2f}</b>{double}</div>",
+            f"<b style='color:#1a1a2e'>{esc(p['web_name'])}</b> ({esc(p['team_short'])}, {p['pos']}, {fmt_price(p['price'])}) · "
+            f"ppg lalu {p['last_ppg']:.2f} · proyeksi GW ini <b style='color:#37003c'>{p['proj']:.2f}</b>{double}</div>",
             unsafe_allow_html=True,
         )
 with st.expander("Value musim lalu (poin per £1 juta, harga ≤ £11.0m)"):
@@ -174,8 +178,8 @@ with st.expander("Value musim lalu (poin per £1 juta, harga ≤ £11.0m)"):
     for p in vals.to_dict("records"):
         st.markdown(
             f"<div class='info-line'><b style='color:#00ff87'>{p['last_value']:.2f}</b> pts/£1jt — "
-            f"<b style='color:#fff'>{esc(p['web_name'])}</b> ({esc(p['team_short'])}, {p['pos']}, {fmt_price(p['price'])}) · "
-            f"{int(p['last_points'])} pts musim lalu · proyeksi GW ini <b style='color:#4ade80'>{p['proj']:.2f}</b></div>",
+            f"<b style='color:#1a1a2e'>{esc(p['web_name'])}</b> ({esc(p['team_short'])}, {p['pos']}, {fmt_price(p['price'])}) · "
+            f"{int(p['last_points'])} pts musim lalu · proyeksi GW ini <b style='color:#37003c'>{p['proj']:.2f}</b></div>",
             unsafe_allow_html=True,
         )
 

@@ -11,6 +11,7 @@ from fpl.ui import (
     fdr_badge_html,
     load_data,
     photo_url,
+    player_img_html,
     pos_badge_html,
     status_badge_html,
 )
@@ -93,33 +94,70 @@ with c2:
 
 view = view.sort_values(sort_col, ascending=ascending)
 
-show = view[["web_name", "team_short", "pos", "price", "proj", "xGI_per90", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance", "status", "id"]].copy()
-show.columns = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi", "xGI/90", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang", "Status", "id"]
-
-pos_colors = {"GK": "#ca8a04", "DEF": "#2563eb", "MID": "#16a34a", "FWD": "#dc2626"}
-fdr_colors = {1: "#16a34a", 2: "#4ade80", 3: "#52525b", 4: "#f59e0b", 5: "#dc2626"}
+show = view[["web_name", "team_short", "pos", "price", "proj", "xGI_per90", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance", "status"]].copy()
+show["price"] = show["price"] / 10
+show.columns = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi", "xGI/90", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang", "Status"]
 
 
 def style_pos(v):
-    return f"background-color:{pos_colors.get(v, '#52525b')};color:#fff;font-weight:800"
+    colors = {
+        "GK": "background-color:#d97706;color:#ffffff;font-weight:600;text-align:center",
+        "DEF": "background-color:#2563eb;color:#ffffff;font-weight:600;text-align:center",
+        "MID": "background-color:#16a34a;color:#ffffff;font-weight:600;text-align:center",
+        "FWD": "background-color:#dc2626;color:#ffffff;font-weight:600;text-align:center",
+    }
+    return colors.get(v, "color:#0f172a;text-align:center")
 
 
 def style_fdr(v):
-    return f"background-color:{fdr_colors.get(v, '#52525b')};color:#fff;font-weight:800"
+    try:
+        iv = int(float(v))
+    except (ValueError, TypeError):
+        iv = 3
+    colors = {
+        1: "background-color:#01FC7A;color:#064420;font-weight:600;text-align:center",
+        2: "background-color:#01FC7A;color:#064420;font-weight:600;text-align:center",
+        3: "background-color:#e2e8f0;color:#1e293b;font-weight:600;text-align:center",
+        4: "background-color:#FF1751;color:#ffffff;font-weight:600;text-align:center",
+        5: "background-color:#80072D;color:#ffffff;font-weight:600;text-align:center",
+    }
+    return colors.get(iv, "color:#0f172a;text-align:center")
 
 
 def style_status(v):
     c = "#16a34a" if v == "a" else "#dc2626"
-    return f"color:{c};font-weight:700"
+    return f"color:{c};font-weight:600;text-align:center"
+
+
+def fmt_fdr(v):
+    try:
+        return f"{int(float(v))}"
+    except (ValueError, TypeError):
+        return "-"
+
+
+def fmt_chance(v):
+    try:
+        f = float(v)
+        if f <= 1.0:
+            return f"{int(f * 100)}%"
+        return f"{int(f)}%"
+    except (ValueError, TypeError):
+        return "-"
 
 
 styled = (
-    show.style.map(style_pos, subset=["Pos"])
+    show.style
+    .map(lambda v: "color:#0f172a;font-weight:400", subset=["Pemain", "Tim", "xGI/90", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "Peluang"])
+    .map(lambda v: "color:#64748b;font-weight:400", subset=["Harga"])
+    .map(style_pos, subset=["Pos"])
     .map(style_fdr, subset=["FDR"])
     .map(style_status, subset=["Status"])
-    .map(lambda v: f"color:#f59e0b;font-weight:800", subset=["Poin Lalu"])
+    .map(lambda v: "color:#d97706;font-weight:500", subset=["Poin Lalu"])
+    .map(lambda v: "color:#37003c;font-weight:600", subset=["Proyeksi"])
     .format(
         {
+            "Harga": "£{:.1f}m",
             "Proyeksi": "{:.2f}",
             "xGI/90": "{:.2f}",
             "Poin Lalu": "{:.0f}",
@@ -127,15 +165,14 @@ styled = (
             "Form": "{:.2f}",
             "PPG": "{:.2f}",
             "Kepemilikan": "{:.1f}%",
-            "Peluang": "{:.0f}%",
+            "FDR": fmt_fdr,
+            "Peluang": fmt_chance,
         }
     )
+    .hide(axis="index")
 )
-styled = styled.map(lambda v: f"color:#fff", subset=["Pemain", "Tim", "Proyeksi", "Form", "PPG", "Kepemilikan", "Lawan", "PPG Lalu"])
-styled = styled.map(lambda v: f"color:#8b93a7", subset=["Harga"])
-styled = styled.hide(axis="index")
 
-st.dataframe(styled, use_container_width=True, height=520)
+st.dataframe(styled, use_container_width=True, height=520, hide_index=True)
 
 st.divider()
 
@@ -150,7 +187,7 @@ with c1:
     st.markdown(
         f"""
         <div class="fpl-card" style="text-align:center">
-          <img src="{photo_url(row['photo_code'])}" style="width:96px;height:120px;object-fit:contain;background:#0d1117;border-radius:12px">
+          {player_img_html(row, style="width:96px;height:120px;object-fit:contain;background:#f5f6f8;border-radius:12px")}
           <h3 style="margin:10px 0 2px">{esc(row['web_name'])}</h3>
           <div>{esc(row['team_name'])} {pos_badge_html(row['pos'])}</div>
           <div class="p-team" style="margin:8px 0">{fmt_price(row['price'])} {status_badge_html(row['status'])}</div>
@@ -167,9 +204,9 @@ with c2:
         f"""
         <div class="fpl-card">
           <h3>Proyeksi Gameweek Ini</h3>
-          {bar("Estimasi dasar (form)", row['own'], 5.0, '#7c3aed')}
-          {bar("Proyeksi resmi FPL", row['ep_next_fpl'], 5.0, '#3b82f6')}
-          {bar("Proyeksi akhir", row['proj'] if row['proj'] else 0, 8.0, '#00ff87')}
+          {bar("Estimasi dasar (form)", row['own'], 5.0, '#6d28d9')}
+          {bar("Proyeksi resmi FPL", row['ep_next_fpl'], 5.0, '#2563eb')}
+          {bar("Proyeksi akhir", row['proj'] if row['proj'] else 0, 8.0, '#37003c')}
           <div class="card-sub" style="margin-top:10px">{fixture_line(row)}</div>
         </div>
         """,
@@ -179,13 +216,13 @@ with c2:
         f"<div class='info-line'>Kepemilikan: <b>{row['selected_by']:.1f}%</b></div>",
         f"<div class='info-line'>Menit bermain: <b>{row['minutes']}</b> | Starter: <b>{row['starts']}</b></div>",
         f"<div class='info-line'>Poin total: <b>{row['total_points']}</b> | Form: <b>{row['form']:.2f}</b> | PPG: <b>{row['ppg']:.2f}</b></div>",
-        f"<div class='info-line'>xGI: <b>{row['xGI']:.2f}</b> | xGI/90: <b style='color:#7c3aed'>{row['xGI_per90']:.2f}</b> | xG: <b>{row['xG']:.2f}</b> | xA: <b>{row['xA']:.2f}</b></div>",
-        f"<div class='info-line'>Threat: <b>{row['threat']:.0f}</b> | CS prob: <b style='color:#3b82f6'>{row.get('cs_prob', 0):.1%}</b></div>",
+        f"<div class='info-line'>xGI: <b>{row['xGI']:.2f}</b> | xGI/90: <b style='color:#6d28d9'>{row['xGI_per90']:.2f}</b> | xG: <b>{row['xG']:.2f}</b> | xA: <b>{row['xA']:.2f}</b></div>",
+        f"<div class='info-line'>Threat: <b>{row['threat']:.0f}</b> | CS prob: <b style='color:#2563eb'>{row.get('cs_prob', 0):.1%}</b></div>",
     ]
     if row["last_points"]:
-        star = "" if row["last_points"] < 200 else " · <b style='color:#f59e0b'>BINTANG MUSIM LALU</b>"
+        star = "" if row["last_points"] < 200 else " · <b style='color:#d97706'>BINTANG MUSIM LALU</b>"
         info.append(
-            f"<div class='info-line'>Musim lalu: <b style='color:#f59e0b'>{int(row['last_points'])} poin</b> "
+            f"<div class='info-line'>Musim lalu: <b style='color:#d97706'>{int(row['last_points'])} poin</b> "
             f"(ppg {row['last_ppg']:.2f}) · G {int(row['last_goals'])} · A {int(row['last_assists'])} · "
             f"CS {int(row['last_cs'])} · Bonus {int(row['last_bonus'])} · value {row['last_value']:.2f} pts/£1jt{star}</div>"
         )
@@ -204,7 +241,7 @@ with c2:
             warn = "" if f >= 1.0 else f" (proyeksi dikurangi x{f:.2f} karena risiko menit)"
             info.append(
                 f"<div class='info-line'>Menit musim lalu: <b>{m}</b> ({sts} starter) · "
-                f"<b style='color:{'#4ade80' if f >= 0.88 else '#f59e0b'}'>{rel_label(m, True, row['selected_by'])}</b>{warn}</div>"
+                f"<b style='color:{'#16a34a' if f >= 0.88 else '#d97706'}'>{rel_label(m, True, row['selected_by'])}</b>{warn}</div>"
             )
         else:
             from fpl.reliability import factor as rel_factor, label as rel_label
@@ -212,7 +249,7 @@ with c2:
             f = rel_factor(0, False, row["selected_by"])
             trust = f >= 0.95
             info.append(
-                f"<div class='info-line'>Musim lalu: <b style='color:{'#4ade80' if trust else '#f59e0b'}'>{rel_label(0, False, row['selected_by'])}</b> "
+                f"<div class='info-line'>Musim lalu: <b style='color:{'#16a34a' if trust else '#d97706'}'>{rel_label(0, False, row['selected_by'])}</b> "
                 f"(kepemilikan komunitas {row['selected_by']:.1f}% → faktor x{f:.2f})</div>"
             )
     except Exception:
@@ -243,9 +280,9 @@ with c2:
                 yaxis_title="Poin",
                 yaxis2=dict(title="Menit", overlaying="y", side="right", showgrid=False),
                 height=320,
-                paper_bgcolor="#161b27",
-                plot_bgcolor="#161b27",
-                font=dict(color="#e7e9ee", size=11),
+                paper_bgcolor="#fff",
+                plot_bgcolor="#f8f9fb",
+                font=dict(color="#1a1a2e", size=11),
                 margin=dict(l=10, r=10, t=10, b=10),
                 legend=dict(orientation="h", y=1.08),
             )

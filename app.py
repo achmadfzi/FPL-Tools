@@ -11,6 +11,7 @@ from fpl.ui import (
     load_data,
     photo_url,
     player_card_html,
+    player_img_html,
     pos_badge_html,
     refresh,
 )
@@ -29,7 +30,7 @@ try:
     from fpl.accuracy import save_projections
     save_projections(ev.get("id"), df)
 except Exception:
-    pass  # Silently ignore — accuracy tracking is optional
+    pass
 
 st.markdown(
     f"""
@@ -55,12 +56,20 @@ with c_spacer:
         "seluruh data, proyeksi, kapten, dan FDR langsung menyesuaikan."
     )
 
-c1, c2, c3, c4 = st.columns(4)
+# --- Stats bar ---
 top_cap = df.dropna(subset=["proj"]).sort_values("proj", ascending=False).iloc[0]
-c1.metric("Gameweek", f"GW {ev.get('id')}")
-c2.metric("Total pemain", f"{len(df)}")
-c3.metric("Pertandingan GW depan", f"{len(gd.fixtures_by_team) // 2} laga")
-c4.metric("Kapten rekomendasi", f"{top_cap['web_name']} ({top_cap['proj']:.2f} pts)")
+st.markdown(
+    f"""
+    <div class="stat-bar">
+      <div class="stat-item"><div class="sv">GW {ev.get('id')}</div><div class="sl">Gameweek</div></div>
+      <div class="stat-item"><div class="sv">{len(df)}</div><div class="sl">Total Pemain</div></div>
+      <div class="stat-item"><div class="sv">{len(gd.fixtures_by_team) // 2}</div><div class="sl">Pertandingan</div></div>
+      <div class="stat-item"><div class="sv">{top_cap['web_name']}</div><div class="sl">Kapten Rekomendasi</div></div>
+      <div class="stat-item"><div class="sv" style="color:#37003c">{top_cap['proj']:.2f}pts</div><div class="sl">Proyeksi Tertinggi</div></div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.markdown('<div class="section">Rekomendasi <em>Kapten</em></div>', unsafe_allow_html=True)
 top3 = df.dropna(subset=["proj"]).sort_values("proj", ascending=False).head(3)
@@ -101,21 +110,21 @@ st.markdown(fdr_html, unsafe_allow_html=True)
 
 st.markdown('<div class="section">Top 10 <em>Proyeksi Poin</em> Gameweek Ini</div>', unsafe_allow_html=True)
 top = df.dropna(subset=["proj"]).sort_values("proj", ascending=False).head(10)
-rows = "<div class='fpl-card'><div style='display:flex;flex-direction:column;gap:8px'>"
+rows = "<div class='fpl-card'><div style='display:flex;flex-direction:column;gap:10px'>"
 for rank, (_, p) in enumerate(top.iterrows(), 1):
     home = "Kandang" if p.get("is_home") else "Tandang"
     dgw_tag = " <span class='fdr-badge fdr-2'>DGW</span>" if p.get("n_fixtures", 1) >= 2 else ""
     rows += (
-        f'<div style="display:flex;align-items:center;gap:12px">'
-        f'<span style="width:24px;font-weight:900;color:#8b93a7">{rank}</span>'
-        f'<img src="{photo_url(p["photo_code"])}" style="width:34px;height:42px;object-fit:contain;background:#0d1117;border-radius:6px">'
-        f'<span style="font-weight:700;color:#fff;min-width:150px">{esc(p["web_name"])}</span>'
-        f'<span style="min-width:60px">{pos_badge_html(p["pos"])}</span>'
-        f'<span style="color:#8b93a7;min-width:70px">{esc(p["team_short"])}</span>'
-        f'<span style="color:#8b93a7;min-width:60px">{fmt_price(p["price"])}</span>'
-        f'<span style="color:#8b93a7;flex:1">vs {esc(p["opponent_short"])} · {home}{dgw_tag}</span>'
+        f'<div style="display:flex;align-items:center;gap:12px;font-size:.82rem">'
+        f'<span style="width:20px;font-weight:500;color:#94a3b8">{rank}</span>'
+        f'{player_img_html(p, style="width:34px;height:42px;object-fit:contain;background:#f8fafc;border-radius:6px")}'
+        f'<span style="font-weight:500;color:#0f172a;min-width:150px">{esc(p["web_name"])}</span>'
+        f'<span style="min-width:56px">{pos_badge_html(p["pos"])}</span>'
+        f'<span style="color:#64748b;min-width:65px">{esc(p["team_short"])}</span>'
+        f'<span style="color:#64748b;min-width:60px">{fmt_price(p["price"])}</span>'
+        f'<span style="color:#475569;flex:1">vs {esc(p["opponent_short"])} · {home}{dgw_tag}</span>'
         f'{fdr_badge_html(p.get("fdr"))}'
-        f'<span style="font-weight:900;color:#00ff87;min-width:56px;text-align:right">{p["proj"]:.2f}</span>'
+        f'<span style="font-weight:600;color:#37003c;min-width:50px;text-align:right">{p["proj"]:.2f}</span>'
         f'</div>'
     )
 rows += "</div></div>"
@@ -134,7 +143,7 @@ if len(easy) > 4:
 st.markdown('<div class="section">Bintang <em>Musim Lalu</em> — Acuan Musim Ini</div>', unsafe_allow_html=True)
 st.caption(
     "Top poin musim lalu (2025/26) sebagai acuan, lengkap dengan proyeksi GW ini. "
-    "Tanda <b style='color:#00ff87'>DOUBLE</b> = poin tinggi musim lalu DAN proyeksi tinggi sekarang."
+    "Tanda <span style='color:#37003c;font-weight:600'>DOUBLE</span> = poin tinggi musim lalu DAN proyeksi tinggi sekarang."
 )
 
 from fpl.paststats import attach, indicator as past_indicator, load as load_past
@@ -142,48 +151,29 @@ from fpl.paststats import attach, indicator as past_indicator, load as load_past
 with st.spinner("Memuat statistik musim lalu..."):
     dfp = attach(df, load_past(gd))
 stars = dfp[(dfp["last_starts"] >= 15) & (dfp["last_points"] > 0)].nlargest(10, "last_points")
-rows = "<div class='fpl-card'><div style='display:flex;flex-direction:column;gap:8px'>"
+rows = "<div class='fpl-card'><div style='display:flex;flex-direction:column;gap:10px'>"
 for rank, (_, p) in enumerate(stars.iterrows(), 1):
     double = "<span class='fdr-badge fdr-2'>DOUBLE</span>" if p["proj"] and p["proj"] >= 2.2 else ""
     proj_txt = f"{p['proj']:.2f}" if p["proj"] is not None else "-"
     rows += (
-        f'<div style="display:flex;align-items:center;gap:12px">'
-        f'<span style="width:24px;font-weight:900;color:#8b93a7">{rank}</span>'
-        f'<span style="font-weight:700;color:#fff;min-width:150px">{esc(p["web_name"])}</span>'
-        f'<span style="min-width:56px">{pos_badge_html(p["pos"])}</span>'
-        f'<span style="color:#8b93a7;min-width:56px">{esc(p["team_short"])}</span>'
-        f'<span style="font-weight:900;color:#f59e0b;min-width:70px">{int(p["last_points"])} pts</span>'
-        f'<span style="color:#8b93a7;min-width:60px">ppg {p["last_ppg"]:.2f}</span>'
-        f'<span style="color:#8b93a7;min-width:60px">{fmt_price(p["price"])}</span>'
-        f'<span style="color:#8b93a7;flex:1">proyeksi GW ini: <b style="color:#fff">{proj_txt}</b></span>'
+        f'<div style="display:flex;align-items:center;gap:12px;font-size:.82rem">'
+        f'<span style="width:20px;font-weight:500;color:#94a3b8">{rank}</span>'
+        f'<span style="font-weight:500;color:#0f172a;min-width:150px">{esc(p["web_name"])}</span>'
+        f'<span style="min-width:54px">{pos_badge_html(p["pos"])}</span>'
+        f'<span style="color:#64748b;min-width:50px">{esc(p["team_short"])}</span>'
+        f'<span style="font-weight:500;color:#d97706;min-width:70px">{int(p["last_points"])} pts</span>'
+        f'<span style="color:#64748b;min-width:60px">ppg {p["last_ppg"]:.2f}</span>'
+        f'<span style="color:#64748b;min-width:60px">{fmt_price(p["price"])}</span>'
+        f'<span style="color:#475569;flex:1">proyeksi GW ini: <span style="color:#0f172a;font-weight:500">{proj_txt}</span></span>'
         f'{double}</div>'
     )
 rows += "</div></div>"
 st.markdown(rows, unsafe_allow_html=True)
 
-st.markdown('<div class="section" style="font-size:.95rem">Value <em>Musim Lalu</em> — Poin per £1 Juta</div>', unsafe_allow_html=True)
-st.caption("Pemain murah yang mencetak banyak poin musim lalu — kandidat budget pick terbaik.")
-vals = dfp[(dfp["last_starts"] >= 15) & (dfp["last_points"] > 0) & (dfp["price"] <= 110)].nlargest(8, "last_value")
-vrows = '<div class="fpl-card"><div style="display:flex;flex-direction:column;gap:8px">'
-for rank, (_, p) in enumerate(vals.iterrows(), 1):
-    vrows += (
-        f'<div style="display:flex;align-items:center;gap:12px">'
-        f'<span style="width:24px;font-weight:900;color:#8b93a7">{rank}</span>'
-        f'<span style="font-weight:700;color:#fff;min-width:150px">{esc(p["web_name"])}</span>'
-        f'<span style="min-width:56px">{pos_badge_html(p["pos"])}</span>'
-        f'<span style="color:#8b93a7;min-width:56px">{esc(p["team_short"])}</span>'
-        f'<span style="font-weight:900;color:#00ff87;min-width:90px">{p["last_value"]:.2f} pts/£1jt</span>'
-        f'<span style="color:#f59e0b;min-width:70px">{int(p["last_points"])} pts</span>'
-        f'<span style="color:#8b93a7;flex:1">{fmt_price(p["price"])} · proyeksi GW ini: <b style="color:#fff">{p["proj"]:.2f}</b></span>'
-        f'</div>'
-    )
-vrows += "</div></div>"
-st.markdown(vrows, unsafe_allow_html=True)
-
 # --- Accuracy Summary ---
 st.markdown('<div class="section" style="font-size:.95rem">Akurasi <em>Model</em> Proyeksi</div>', unsafe_allow_html=True)
 try:
-    from fpl.accuracy import history as acc_history, suggested_weights
+    from fpl.accuracy import history as acc_history
 
     hist = acc_history()
     completed = [h for h in hist if h["metrics"] is not None]
@@ -195,7 +185,7 @@ try:
         c2.metric("RMSE (GW terakhir)", f"{m['rmse']:.2f}", f"{m['n']} pemain dievaluasi")
         avg_mae = sum(h["metrics"]["mae"] for h in completed) / len(completed)
         c3.metric("MAE rata-rata musim", f"{avg_mae:.2f}", f"{len(completed)} GW data")
-        st.caption("Lihat detail lengkap di halaman **Akurasi Model** (sidebar). MAE = rata-rata selisih absolut proyeksi vs skor aktual.")
+        st.caption("Lihat detail lengkap di halaman **Akurasi Model** (sidebar).")
     else:
         st.info(
             "Belum ada data akurasi — proyeksi otomatis disimpan setiap GW. "

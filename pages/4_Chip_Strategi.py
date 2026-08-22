@@ -108,32 +108,34 @@ for g in cal:
     )
 cal_df = pd.DataFrame(rows)
 
-style_map = "background-color:#14532d;color:#fff;font-weight:800;text-align:center"
+style_map = "background-color:#37003c;color:#00ff87;font-weight:600;text-align:center"
 
 
 def highlight_max(s):
     m = s.max()
-    return [style_map if (v == m and pd.notna(v)) else "" for v in s]
+    return [style_map if (v == m and pd.notna(v)) else "color:#0f172a;font-weight:400;text-align:center" for v in s]
 
 
 styled_cal = (
-    cal_df.style.map(lambda v: "color:#8b93a7" if pd.isna(v) else "", subset=["TC", "BB", "WC", "FH"])
+    cal_df.style
+    .map(lambda v: "color:#0f172a;font-weight:400;text-align:center", subset=["GW", "Deadline", "DGW", "BGW"])
+    .map(lambda v: "color:#94a3b8;text-align:center" if pd.isna(v) else "color:#0f172a;font-weight:400;text-align:center", subset=["TC", "BB", "WC", "FH"])
     .apply(highlight_max, subset=["TC"])
     .apply(highlight_max, subset=["BB"])
     .apply(highlight_max, subset=["WC"])
     .apply(highlight_max, subset=["FH"])
-    .map(lambda v: "color:#4ade80;font-weight:800", subset=["Laga Mudah"])
-    .map(lambda v: "color:#f87171;font-weight:800", subset=["Laga Sulit"])
+    .map(lambda v: "color:#16a34a;font-weight:600;text-align:center", subset=["Laga Mudah"])
+    .map(lambda v: "color:#dc2626;font-weight:600;text-align:center", subset=["Laga Sulit"])
     .format({"TC": "{:.2f}", "BB": "{:.2f}", "WC": "{:.2f}", "FH": "{:.2f}"})
     .hide(axis="index")
 )
-st.dataframe(styled_cal, use_container_width=True)
+st.dataframe(styled_cal, use_container_width=True, hide_index=True)
 st.caption(
     "TC skor = estimasi poin kapten terbaik (×1.9 bila DGW). "
     "BB skor = estimasi poin 4 cadangan (×1.8 bila DGW). "
     "WC skor = value rebuild berdasarkan fixture swing + DGW. "
     "FH skor = value free hit berdasarkan jumlah tim blank. "
-    "Nilai hijau = GW terbaik per chip."
+    "Kotak ungu = GW terbaik per chip."
 )
 
 # --- Chip Sequence Plan ---
@@ -142,15 +144,15 @@ st.caption("Urutan optimal penggunaan 4 chip berdasarkan jadwal dan proyeksi saa
 
 plan = chip_sequence(cal, tc_all, bb_all, wc_all, fh_all)
 if plan:
-    chip_colors = {"TC": "#00ff87", "BB": "#f59e0b", "WC": "#7c3aed", "FH": "#3b82f6"}
+    chip_colors = {"TC": "#37003c", "BB": "#e85d04", "WC": "#6a0dad", "FH": "#2f80ed"}
     chip_names = {"TC": "Triple Captain", "BB": "Bench Boost", "WC": "Wildcard", "FH": "Free Hit"}
     plan_html = '<div class="fpl-card"><div style="display:flex;gap:16px;flex-wrap:wrap">'
     for p in plan:
         color = chip_colors.get(p["chip"], "#8b93a7")
         plan_html += (
-            f'<div style="background:#0d1117;border:2px solid {color};border-radius:14px;padding:14px 20px;text-align:center;min-width:140px">'
+            f'<div style="background:#fff;border:2px solid {color};border-radius:14px;padding:14px 20px;text-align:center;min-width:140px;box-shadow:0 2px 8px rgba(0,0,0,.08)">'
             f'<div style="font-size:.7rem;color:{color};font-weight:900;letter-spacing:2px">{chip_names.get(p["chip"], p["chip"])}</div>'
-            f'<div style="font-size:1.6rem;font-weight:900;color:#fff;margin:4px 0">GW {p["gw"]}</div>'
+            f'<div style="font-size:1.6rem;font-weight:900;color:#1a1a2e;margin:4px 0">GW {p["gw"]}</div>'
             f'<div style="font-size:.82rem;color:#8b93a7">skor {p["score"]:.2f}</div>'
             f'</div>'
         )
@@ -208,7 +210,11 @@ with c1:
             unsafe_allow_html=True,
         )
         st.dataframe(
-            tc_df.style.apply(highlight_max, subset=["TC Skor"]).format({"Proyeksi": "{:.2f}", "TC Skor": "{:.2f}"}).hide(axis="index"),
+            tc_df.style
+            .map(lambda v: "color:#0f172a;font-weight:400;text-align:center", subset=["GW", "Laga Mudah", "Kapten (est)", "Proyeksi", "TC Skor"])
+            .apply(highlight_max, subset=["TC Skor"])
+            .format({"Proyeksi": "{:.2f}", "TC Skor": "{:.2f}"})
+            .hide(axis="index"),
             use_container_width=True,
             hide_index=True,
         )
@@ -226,9 +232,9 @@ with c2:
         <div class="fpl-card">
           <h3>Kapan BB paling bernilai?</h3>
           <div class="card-sub">BB menjadikan 4 cadangan ikut memberi poin. Gunakan saat:</div>
-          <div class="info-line">1. <b>Cadangan Anda kuat</b> (proyeksi 4 terendah &ge; ±8 poin).</div>
-          <div class="info-line">2. Banyak pemain tim Anda <b>main 2 laga (DGW)</b>.</div>
-          <div class="info-line">3. Semua pemain <b>bebas cedera/suspensi</b>.</div>
+          <div class="info-line">1. Cadangan Anda kuat (proyeksi 4 terendah &ge; ±8 poin).</div>
+          <div class="info-line">2. Banyak pemain tim Anda main 2 laga (DGW).</div>
+          <div class="info-line">3. Semua pemain bebas cedera/suspensi.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -238,7 +244,7 @@ with c2:
         bench = bench_players(squad)
         bb_now = bb_estimate(gw_summary(gd, ev["id"]), squad)
         st.markdown(
-            f"<div class='info-line'>Nilai cadangan GW ini: <b style='color:#00ff87'>{bb_now['score']:.2f}</b> poin.</div>",
+            f"<div class='info-line'>Nilai cadangan GW ini: <span style='color:#37003c;font-weight:600'>{bb_now['score']:.2f}</span> poin.</div>",
             unsafe_allow_html=True,
         )
         bench_html = '<div class="bench-row">'
@@ -266,8 +272,13 @@ with c2:
             bb_df = pd.DataFrame(bb_rows).sort_values("BB Skor", ascending=False).head(5)
             st.markdown('<div class="section" style="font-size:.95rem">GW terbaik untuk <em>BB</em></div>', unsafe_allow_html=True)
             st.dataframe(
-                bb_df.style.apply(highlight_max, subset=["BB Skor"]).format({"BB Skor": "{:.2f}"}).hide(axis="index"),
+                bb_df.style
+                .map(lambda v: "color:#0f172a;font-weight:400;text-align:center", subset=["GW", "Laga Mudah", "Pemain DGW", "BB Skor"])
+                .apply(highlight_max, subset=["BB Skor"])
+                .format({"BB Skor": "{:.2f}"})
+                .hide(axis="index"),
                 use_container_width=True,
+                hide_index=True,
             )
             best_bb = bb_df.iloc[0]
             st.success(
@@ -293,10 +304,10 @@ with c1:
         <div class="fpl-card">
           <h3>Kapan WC paling bernilai?</h3>
           <div class="card-sub">WC memungkinkan rebuild total tanpa penalti transfer. Gunakan saat:</div>
-          <div class="info-line">1. Banyak pemain skuad <b>underperform</b> atau cedera.</div>
-          <div class="info-line">2. Ada <b>fixture swing besar</b> — banyak tim beralih dari lawan sulit ke mudah.</div>
-          <div class="info-line">3. Menjelang <b>DGW</b> — rebuild untuk memaksimalkan pemain DGW.</div>
-          <div class="info-line">4. <b>Paruh musim</b> — WC kedua tersedia setelah GW 20.</div>
+          <div class="info-line">1. Banyak pemain skuad underperform atau cedera.</div>
+          <div class="info-line">2. Ada fixture swing besar — banyak tim beralih dari lawan sulit ke mudah.</div>
+          <div class="info-line">3. Menjelang DGW — rebuild untuk memaksimalkan pemain DGW.</div>
+          <div class="info-line">4. Paruh musim — WC kedua tersedia setelah GW 20.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -315,8 +326,13 @@ with c1:
     if wc_rows:
         wc_df = pd.DataFrame(wc_rows).sort_values("WC Skor", ascending=False).head(5)
         st.dataframe(
-            wc_df.style.apply(highlight_max, subset=["WC Skor"]).format({"WC Skor": "{:.2f}"}).hide(axis="index"),
+            wc_df.style
+            .map(lambda v: "color:#0f172a;font-weight:400;text-align:center", subset=["GW", "Laga Mudah (3GW)", "Tim DGW", "Underperform", "WC Skor"])
+            .apply(highlight_max, subset=["WC Skor"])
+            .format({"WC Skor": "{:.2f}"})
+            .hide(axis="index"),
             use_container_width=True,
+            hide_index=True,
         )
         best_wc = wc_df.iloc[0]
         st.success(
@@ -332,8 +348,8 @@ with c2:
         <div class="fpl-card">
           <h3>Kapan FH paling bernilai?</h3>
           <div class="card-sub">FH memungkinkan tim berbeda untuk 1 GW saja. Gunakan saat:</div>
-          <div class="info-line">1. <b>Blank Gameweek (BGW)</b> — banyak tim tidak bermain.</div>
-          <div class="info-line">2. Banyak pemain skuad Anda <b>tidak bertanding</b> di GW itu.</div>
+          <div class="info-line">1. Blank Gameweek (BGW) — banyak tim tidak bermain.</div>
+          <div class="info-line">2. Banyak pemain skuad Anda tidak bertanding di GW itu.</div>
           <div class="info-line">3. Tidak ada DGW — simpan TC/BB untuk DGW, pakai FH di BGW.</div>
         </div>
         """,
@@ -352,8 +368,13 @@ with c2:
     if fh_rows:
         fh_df = pd.DataFrame(fh_rows).sort_values("FH Skor", ascending=False).head(5)
         st.dataframe(
-            fh_df.style.apply(highlight_max, subset=["FH Skor"]).format({"FH Skor": "{:.2f}"}).hide(axis="index"),
+            fh_df.style
+            .map(lambda v: "color:#0f172a;font-weight:400;text-align:center", subset=["GW", "Tim Blank", "BGW?", "FH Skor"])
+            .apply(highlight_max, subset=["FH Skor"])
+            .format({"FH Skor": "{:.2f}"})
+            .hide(axis="index"),
             use_container_width=True,
+            hide_index=True,
         )
         best_fh = fh_df.iloc[0]
         if best_fh["Tim Blank"] > 0:

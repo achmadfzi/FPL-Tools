@@ -67,7 +67,7 @@ else:
     gws = [h["gw"] for h in completed]
     fig.add_trace(go.Scatter(
         x=gws, y=maes, mode="lines+markers", name="MAE",
-        line=dict(color="#00ff87", width=3), marker=dict(size=8, color="#00ff87"),
+        line=dict(color="#37003c", width=3), marker=dict(size=8, color="#37003c"),
     ))
     fig.add_trace(go.Scatter(
         x=gws, y=rmses, mode="lines+markers", name="RMSE",
@@ -76,8 +76,8 @@ else:
     fig.update_layout(
         xaxis_title="Gameweek", yaxis_title="Error",
         height=350,
-        paper_bgcolor="#161b27", plot_bgcolor="#161b27",
-        font=dict(color="#e7e9ee", size=11),
+        paper_bgcolor="#fff", plot_bgcolor="#f8f9fb",
+        font=dict(color="#1a1a2e", size=11),
         margin=dict(l=10, r=10, t=10, b=10),
         legend=dict(orientation="h", y=1.08),
     )
@@ -100,8 +100,13 @@ else:
             "MAE FWD": m.get("by_pos", {}).get("FWD", "-"),
         })
     acc_df = pd.DataFrame(rows)
-    st.dataframe(acc_df.style.format({"MAE": "{:.2f}", "RMSE": "{:.2f}"}).hide(axis="index"),
-                  use_container_width=True)
+    styled_acc = (
+        acc_df.style
+        .map(lambda v: "color:#0f172a;font-weight:400;text-align:center")
+        .format({"MAE": "{:.2f}", "RMSE": "{:.2f}"})
+        .hide(axis="index")
+    )
+    st.dataframe(styled_acc, use_container_width=True, hide_index=True)
 
     # --- Breakdown by Position ---
     st.markdown('<div class="section" style="font-size:.95rem">Akurasi <em>Per Posisi</em></div>', unsafe_allow_html=True)
@@ -111,7 +116,6 @@ else:
             pos_data.setdefault(pos, []).append(mae)
     if pos_data:
         pos_cols = st.columns(len(pos_data))
-        pos_colors = {"GK": "#ca8a04", "DEF": "#2563eb", "MID": "#16a34a", "FWD": "#dc2626"}
         for col, (pos, maes_list) in zip(pos_cols, sorted(pos_data.items())):
             avg = sum(maes_list) / len(maes_list)
             col.metric(pos, f"MAE {avg:.2f}", f"{len(maes_list)} GW data")
@@ -137,9 +141,9 @@ else:
         st.markdown('<div class="fpl-card"><h3>Top 5 Over-Estimate</h3><div class="card-sub">Proyeksi terlalu tinggi vs aktual</div>', unsafe_allow_html=True)
         for e in m.get("top_overestimate", []):
             st.markdown(
-                f"<div class='info-line'><b style='color:#f87171'>{esc(e['name'])}</b> ({e['pos']}) — "
-                f"proyeksi {e['proj']:.2f} vs aktual <b>{e['actual']}</b> "
-                f"(error {e['error']:+.2f})</div>",
+                f"<div class='info-line'><span style='color:#b91c1c;font-weight:500'>{esc(e['name'])}</span> "
+                f"<span style='color:#64748b'>({e['pos']}) — proyeksi {e['proj']:.2f} vs aktual {e['actual']} "
+                f"(error {e['error']:+.2f})</span></div>",
                 unsafe_allow_html=True,
             )
         st.markdown("</div>", unsafe_allow_html=True)
@@ -147,9 +151,9 @@ else:
         st.markdown('<div class="fpl-card"><h3>Top 5 Under-Estimate</h3><div class="card-sub">Proyeksi terlalu rendah vs aktual</div>', unsafe_allow_html=True)
         for e in m.get("top_underestimate", []):
             st.markdown(
-                f"<div class='info-line'><b style='color:#4ade80'>{esc(e['name'])}</b> ({e['pos']}) — "
-                f"proyeksi {e['proj']:.2f} vs aktual <b>{e['actual']}</b> "
-                f"(error {e['error']:+.2f})</div>",
+                f"<div class='info-line'><span style='color:#15803d;font-weight:500'>{esc(e['name'])}</span> "
+                f"<span style='color:#64748b'>({e['pos']}) — proyeksi {e['proj']:.2f} vs aktual {e['actual']} "
+                f"(error {e['error']:+.2f})</span></div>",
                 unsafe_allow_html=True,
             )
         st.markdown("</div>", unsafe_allow_html=True)
@@ -164,7 +168,7 @@ else:
             f"""
             <div class="fpl-card">
               <h3>Analisis {sw['n_gws']} Gameweek</h3>
-              <div class="info-line">MAE rata-rata: <b style="color:#00ff87">{sw['avg_mae']:.2f}</b></div>
+              <div class="info-line">MAE rata-rata: <b style="color:#37003c">{sw['avg_mae']:.2f}</b></div>
             </div>
             """,
             unsafe_allow_html=True,
