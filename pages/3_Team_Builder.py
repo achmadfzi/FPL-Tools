@@ -418,8 +418,8 @@ if len(sel_new) == 15:
 
         if multi_suggestions:
             for s in multi_suggestions[:6]:
-                w = s["player"]
-                best_rep = s["reps"][0]
+                w = s["player"]  # pyrefly: ignore[bad-index]
+                best_rep = s["reps"][0]  # pyrefly: ignore[bad-index]
                 hit = hit_calculator(w, best_rep, gw_projs, horizon=3)
                 hit_badge = (
                     f"<span class='fdr-badge fdr-2'>HIT ✓ net +{hit['net_after_hit']:.1f}</span>"
@@ -429,10 +429,13 @@ if len(sel_new) == 15:
                 swing = fixture_swing_badge(gw_projs, best_rep["id"], horizon=3)
                 swing_html = f" <span class='fdr-badge fdr-1'>{swing}</span>" if swing else ""
 
+                w_name = w['web_name']  # pyrefly: ignore[bad-index]
+                w_team = w['team_short']  # pyrefly: ignore[bad-index]
+
                 st.markdown(
                     f"<div class='info-line'>"
-                    f"<span style='color:#dc2626;font-weight:500'>{esc(w['web_name'])}</span> "
-                    f"<span style='color:#64748b'>({esc(w['team_short'])}, 3GW {s['player_total']:.1f}) → </span>"
+                    f"<span style='color:#dc2626;font-weight:500'>{esc(w_name)}</span> "
+                    f"<span style='color:#64748b'>({esc(w_team)}, 3GW {s['player_total']:.1f}) → </span>"
                     f"<span style='color:#16a34a;font-weight:500'>{esc(best_rep['web_name'])}</span> "
                     f"<span style='color:#64748b'>({esc(best_rep['team_short'])}, 3GW {best_rep['proj_total']:.1f}) · </span>"
                     f"<span style='color:#37003c;font-weight:600'>+{s['gain']:.2f} (3GW)</span> "
@@ -448,7 +451,8 @@ if len(sel_new) == 15:
         st.markdown('<div class="section" style="font-size:.95rem">Rencana <em>3 Gameweek</em> ke Depan</div>', unsafe_allow_html=True)
         from fpl.horizon import risky_players, squad_plan
 
-        plans = squad_plan(squad, gw_projs, 3)
+        raw_plans = squad_plan(squad, gw_projs, 3)
+        plans: list[dict] = [p for p in raw_plans if p is not None]
         cur = gd.next_event["id"]
         total_3gw = sum(p["total"] for p in plans)
         col_plans = st.columns(3)
