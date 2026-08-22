@@ -70,6 +70,7 @@ html, body, [class*="css"], [data-testid="stAppViewContainer"], [data-testid="st
 }
 [data-testid="stAppViewContainer"] { background: #f8fafc; }
 [data-testid="stHeader"] { background: transparent; }
+
 #MainMenu, footer { visibility: hidden; }
 .block-container { padding-top: 1.25rem; max-width: 1360px; }
 h1, h2, h3, h4, h5, h6 { color: #0f172a !important; font-weight: 600; letter-spacing: -0.02em; }
@@ -277,6 +278,11 @@ p, span, div, label { color: inherit; }
   font-size: .64rem; font-weight: 600; color: #0f172a; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; max-width: 74px; margin: 2px auto 0;
   line-height: 1.15;
+}
+.pc .pc-team {
+  font-size: .52rem; font-weight: 500; color: #fff; line-height: 1.1;
+  margin: 1px auto 0; background: #37003c; border-radius: 3px;
+  padding: 0.5px 5px; display: inline-block; letter-spacing: .3px;
 }
 .pc .pc-price { font-size: .56rem; color: #64748b; font-weight: 400; line-height: 1.1; }
 .pc .pc-cap {
@@ -588,23 +594,36 @@ def jersey_svg_uri(team_short, pos=""):
 
 
 def player_img_html(p, cls="pc-img", style=""):
-    """Render a robust player image with an automatic vector team jersey fallback on 404."""
+    """Render a player image as a <div> with CSS background-image layers.
+
+    Photo is the top background layer; jersey SVG is the bottom fallback.
+    If the photo 404s, the browser silently skips it and the jersey shows.
+    Using <div> instead of <img> avoids broken-image icons entirely.
+    """
+    import re
+
     photo = p.get("photo_code") or ""
     team = p.get("team_short") or ""
     pos = p.get("pos") or ""
     fallback_uri = jersey_svg_uri(team, pos)
-    
+
     cls_attr = f' class="{cls}"' if cls else ""
-    style_attr = f' style="{style}"' if style else ""
-    
+
     if photo:
         url = photo_url(photo)
-        return (
-            f'<img{cls_attr}{style_attr} src="{url}" '
-            f'onerror="this.onerror=null; this.src=\'{fallback_uri}\';" '
-            f'loading="lazy">'
-        )
-    return f'<img{cls_attr}{style_attr} src="{fallback_uri}" loading="lazy">'
+        bg = f"background-image:url('{url}'),url('{fallback_uri}');"
+    else:
+        bg = f"background-image:url('{fallback_uri}');"
+
+    # Convert 'background:' shorthand to 'background-color:' so it doesn't
+    # override our background-image. Match 'background:' but not 'background-*:'.
+    safe_style = re.sub(r'(?<![-])background\s*:', 'background-color:', style)
+
+    base_style = (
+        f"display:inline-block;{bg}"
+        f"background-size:contain;background-repeat:no-repeat;background-position:center;"
+    )
+    return f'<div{cls_attr} style="{base_style}{safe_style}"></div>'
 
 
 def jersey_div(team_short, pos=""):
@@ -692,9 +711,11 @@ def pitch_card_html(p, gw_projs=None, gd=None, is_captain=False, is_vice=False):
             )
         gw_html = f'<div class="gw-cells">{"".join(cells)}</div>'
 
+    team_short = esc(p.get("team_short", ""))
     return (
         f'<div class="pc{cap_cls}">{cap_badge}{img}'
         f'<div class="pc-name">{esc(p.get("web_name", "?"))}</div>'
+        f'<div class="pc-team">{team_short}</div>'
         f'<div class="pc-price">{fmt_price(p.get("price", 0))}</div>'
         f'{gw_html}</div>'
     )

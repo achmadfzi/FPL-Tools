@@ -180,9 +180,8 @@ if len(sel_new) == 15:
         # --- Stat Header ---
         st.markdown(stat_header_html(squad, ev, bank, total_proj), unsafe_allow_html=True)
 
-        # --- GW Toggle ---
-        gw_mode = st.radio("Tampilan proyeksi", ["Next GW", "Next 3 GWs"], horizontal=True, label_visibility="collapsed")
-        show_3gw = gw_mode == "Next 3 GWs"
+        # Always show 3 GW projections
+        show_3gw = True
 
         # --- Layout: Pitch + Picker ---
         col_pitch, col_picker = st.columns([5.7, 4.3])
@@ -242,6 +241,7 @@ if len(sel_new) == 15:
                     f'<div class="pos-label">{p["pos"]}</div>'
                     f'{img}'
                     f'<div class="pc-name">{esc(p["web_name"])}</div>'
+                    f'<div class="pc-team" style="font-size:.5rem">{esc(p.get("team_short", ""))}</div>'
                     f'<div class="pc-price">{fmt_price(p["price"])}</div>'
                     f'{gw_cells}'
                     f'</div>'
