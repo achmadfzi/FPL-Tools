@@ -59,6 +59,26 @@ def get_element_summary(player_id, force=False):
     return _fetch_json(f"{BASE_URL}/element-summary/{player_id}/", ttl=LONG_TTL, force=force)
 
 
+def get_entry(team_id, force=False):
+    """Fetch manager and team profile by FPL Team ID."""
+    return _fetch_json(f"{BASE_URL}/entry/{team_id}/", ttl=1800, force=force)
+
+
+def get_entry_picks(team_id, event_id, force=False):
+    """Fetch squad picks for a team at a specific gameweek."""
+    return _fetch_json(f"{BASE_URL}/entry/{team_id}/event/{event_id}/picks/", ttl=1800, force=force)
+
+
+def get_entry_history(team_id, force=False):
+    """Fetch team score history, chips played, and classic league info."""
+    return _fetch_json(f"{BASE_URL}/entry/{team_id}/history/", ttl=1800, force=force)
+
+
+def get_entry_transfers(team_id, force=False):
+    """Fetch transfer history for a team."""
+    return _fetch_json(f"{BASE_URL}/entry/{team_id}/transfers/", ttl=1800, force=force)
+
+
 class GameData:
     def __init__(self, bootstrap, fixtures):
         self.bootstrap = bootstrap

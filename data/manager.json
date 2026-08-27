@@ -1,0 +1,62 @@
+{
+  "team_id": 925693,
+  "team_name": "Real Madas FC",
+  "manager_name": "Achmad Fauzi",
+  "summary_overall_points": 63,
+  "summary_overall_rank": 1280824,
+  "summary_event_points": 63,
+  "bank": 0.0,
+  "team_value": 100.0,
+  "gw_synced": 1,
+  "active_chip": "bboost",
+  "chips_played": [
+    {
+      "name": "bboost",
+      "time": "2026-08-21T13:45:42.852431Z",
+      "event": 1
+    }
+  ],
+  "squad_ids": [
+    1,
+    4,
+    387,
+    229,
+    201,
+    480,
+    12,
+    236,
+    105,
+    165,
+    106,
+    384,
+    346,
+    584,
+    533
+  ],
+  "starters": [
+    1,
+    4,
+    387,
+    229,
+    201,
+    480,
+    12,
+    236,
+    105,
+    165,
+    106,
+    384,
+    346,
+    584,
+    533
+  ],
+  "bench": [
+    384,
+    346,
+    584,
+    533
+  ],
+  "captain_id": 4,
+  "vice_captain_id": 12,
+  "synced_at": 1787657503.9664562
+}

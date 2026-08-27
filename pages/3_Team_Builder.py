@@ -70,19 +70,43 @@ def labels_for(pos, ids):
 if "squad" not in st.session_state:
     st.session_state["squad"] = [i for i in load_squad() if i in by_id]
 
+from fpl.team import load_manager, sync_team
+
+mgr = load_manager()
+
 # --- Squad selection ---
 with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state["squad"]) == 0):
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Muat Tim Tersimpan", use_container_width=True):
-            st.session_state["_squad_request"] = "load"
-    with c2:
-        if st.button("Kosongkan Tim", use_container_width=True):
-            st.session_state["_squad_request"] = "clear"
+    if mgr:
+        c1, c2, c3 = st.columns([1.5, 1, 1])
+        with c1:
+            btn_label = f"Tarik Skuad FPL ({mgr.get('team_name', 'FPL Team')})"
+            if st.button(btn_label, use_container_width=True):
+                st.session_state["_squad_request"] = "sync_fpl"
+        with c2:
+            if st.button("Muat Tim Tersimpan", use_container_width=True):
+                st.session_state["_squad_request"] = "load"
+        with c3:
+            if st.button("Kosongkan Tim", use_container_width=True):
+                st.session_state["_squad_request"] = "clear"
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Muat Tim Tersimpan", use_container_width=True):
+                st.session_state["_squad_request"] = "load"
+        with c2:
+            if st.button("Kosongkan Tim", use_container_width=True):
+                st.session_state["_squad_request"] = "clear"
 
     if "_squad_request" in st.session_state:
         request = st.session_state.pop("_squad_request")
-        if request == "load":
+        if request == "sync_fpl" and mgr:
+            ok, res, err = sync_team(mgr["team_id"], force=True)
+            if ok and isinstance(res, dict) and isinstance(res.get("squad_ids"), list):
+                loaded = [i for i in res["squad_ids"] if i in by_id]
+                st.session_state["squad"] = loaded
+                for pos in SQUAD_SIZE:
+                    st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
+        elif request == "load":
             loaded = [i for i in load_squad() if i in by_id]
             st.session_state["squad"] = loaded
             for pos in SQUAD_SIZE:
@@ -127,7 +151,10 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state["squad"]
 if "sel_new" not in dir() or not sel_new:
     sel_new = [i for i in st.session_state.get("squad", []) if i in by_id]
     total_cost = sum(by_id[i]["price"] for i in sel_new) / 10
-    bank = 100.0 - total_cost
+    if mgr and set(sel_new) == set(mgr.get("squad_ids", [])):
+        bank = float(mgr.get("bank", 0.0))
+    else:
+        bank = max(0.0, 100.0 - total_cost)
 
 if len(sel_new) == 15:
     squad = [
@@ -416,10 +443,11 @@ if len(sel_new) == 15:
 
         multi_suggestions = multi_gw_transfers(squad, pool_t, gw_projs, bank=int(bank * 10), horizon=3)
 
+        from typing import cast
         if multi_suggestions:
             for s in multi_suggestions[:6]:
-                w = s["player"]  # pyrefly: ignore[bad-index]
-                best_rep = s["reps"][0]  # pyrefly: ignore[bad-index]
+                w = cast(dict, s["player"])
+                best_rep = cast(dict, s["reps"][0])
                 hit = hit_calculator(w, best_rep, gw_projs, horizon=3)
                 hit_badge = (
                     f"<span class='fdr-badge fdr-2'>HIT ✓ net +{hit['net_after_hit']:.1f}</span>"
@@ -433,18 +461,100 @@ if len(sel_new) == 15:
                 w_team = w['team_short']  # pyrefly: ignore[bad-index]
 
                 st.markdown(
-                    f"<div class='info-line'>"
-                    f"<span style='color:#dc2626;font-weight:500'>{esc(w_name)}</span> "
-                    f"<span style='color:#64748b'>({esc(w_team)}, 3GW {s['player_total']:.1f}) → </span>"
-                    f"<span style='color:#16a34a;font-weight:500'>{esc(best_rep['web_name'])}</span> "
-                    f"<span style='color:#64748b'>({esc(best_rep['team_short'])}, 3GW {best_rep['proj_total']:.1f}) · </span>"
-                    f"<span style='color:#37003c;font-weight:600'>+{s['gain']:.2f} (3GW)</span> "
-                    f"<span style='color:#64748b'>· GW ini +{s['gain_1gw']:.2f} · {hit_badge}{swing_html}</span>"
-                    f"</div>",
+                    f"""
+                    <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:6px; padding:10px 14px 8px 14px; margin-bottom:8px; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <div style="flex:1;">
+                                <div style="display:flex; align-items:baseline; gap:6px;">
+                                    <span style="font-size:0.7rem; color:#ef4444; font-weight:700; text-transform:uppercase;">OUT</span>
+                                    <span style="color:#0f172a; font-weight:600; font-size:1rem;">{esc(w_name)}</span>
+                                </div>
+                                <div style="color:#64748b; font-size:0.85rem; margin-top:2px;">{esc(w_team)} · £{w['price']/10:.1f}m · Proj: <span style="color:#37003c;font-weight:600;">{s['player_total']:.1f}</span></div>
+                            </div>
+                            <div style="flex:0 0 auto; display:flex; flex-direction:column; align-items:center; padding:0 12px;">
+                                <div style="color:#16a34a; font-weight:700; font-size:1rem; background:#dcfce7; padding:2px 8px; border-radius:12px; margin-bottom:2px;">+{s['gain']:.1f} pts</div>
+                                <div style="color:#94a3b8; font-size:1.1rem; margin-top:-2px;">➔</div>
+                            </div>
+                            <div style="flex:1; text-align:right;">
+                                <div style="display:flex; align-items:baseline; gap:6px; justify-content:flex-end;">
+                                    <span style="color:#0f172a; font-weight:600; font-size:1rem;">{esc(best_rep['web_name'])}</span>
+                                    <span style="font-size:0.7rem; color:#22c55e; font-weight:700; text-transform:uppercase;">IN</span>
+                                </div>
+                                <div style="color:#64748b; font-size:0.85rem; margin-top:2px;">Proj: <span style="color:#37003c;font-weight:600;">{best_rep['proj_total']:.1f}</span> · £{best_rep['price']/10:.1f}m · {esc(best_rep['team_short'])}</div>
+                            </div>
+                        </div>
+                        <div style="display:flex; justify-content:center; gap:6px; margin-top:8px; padding-top:8px; border-top:1px dashed #f1f5f9; transform:scale(0.9);">
+                            {hit_badge}{swing_html}
+                        </div>
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
         else:
             st.info("Tidak ada transfer yang menguntungkan berdasarkan proyeksi 3 GW ke depan.")
+
+        # --- Saran Transfer 1 GW ---
+        st.divider()
+        st.markdown('<div class="section" style="font-size:.95rem">Saran <em>Transfer</em> (Fokus 1 GW Berikutnya)</div>', unsafe_allow_html=True)
+        st.caption("Transfer agresif untuk memaksimalkan poin hanya di gameweek selanjutnya (jangka pendek).")
+        
+        single_suggestions = multi_gw_transfers(squad, pool_t, gw_projs, bank=int(bank * 10), horizon=1)
+        if single_suggestions:
+            for s in single_suggestions[:3]:
+                w = cast(dict, s["player"])
+                best_rep = cast(dict, s["reps"][0])
+                w_proj = gw_projs.get(w['id'], [0])[0]
+                rep_proj = gw_projs.get(best_rep['id'], [0])[0]
+                st.markdown(
+                    f"""
+                    <div style="display:flex; align-items:center; justify-content:space-between; background:#ffffff; border:1px solid #e2e8f0; border-radius:6px; padding:10px 14px; margin-bottom:8px; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
+                        <div style="flex:1;">
+                            <div style="display:flex; align-items:baseline; gap:6px;">
+                                <span style="font-size:0.7rem; color:#ef4444; font-weight:700; text-transform:uppercase;">OUT</span>
+                                <span style="color:#0f172a; font-weight:600; font-size:1rem;">{esc(w['web_name'])}</span>
+                            </div>
+                            <div style="color:#64748b; font-size:0.85rem; margin-top:2px;">{esc(w['team_short'])} · £{w['price']/10:.1f}m · Proj: <span style="color:#37003c;font-weight:600;">{w_proj:.1f}</span></div>
+                        </div>
+                        <div style="flex:0 0 auto; display:flex; flex-direction:column; align-items:center; padding:0 8px; width:100px;">
+                            <div style="color:#16a34a; font-weight:700; font-size:1rem; background:#dcfce7; padding:2px 8px; border-radius:12px; margin-bottom:2px;">+{s['gain']:.1f} pts</div>
+                            <div style="color:#94a3b8; font-size:1.1rem; margin-top:-2px;">➔</div>
+                        </div>
+                        <div style="flex:1; text-align:right;">
+                            <div style="display:flex; align-items:baseline; gap:6px; justify-content:flex-end;">
+                                <span style="color:#0f172a; font-weight:600; font-size:1rem;">{esc(best_rep['web_name'])}</span>
+                                <span style="font-size:0.7rem; color:#22c55e; font-weight:700; text-transform:uppercase;">IN</span>
+                            </div>
+                            <div style="color:#64748b; font-size:0.85rem; margin-top:2px;">Proj: <span style="color:#37003c;font-weight:600;">{rep_proj:.1f}</span> · £{best_rep['price']/10:.1f}m · {esc(best_rep['team_short'])}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("Tidak ada transfer yang menguntungkan untuk 1 GW ke depan.")
+
+        # --- AI Transfer Suggestion ---
+        st.divider()
+        st.markdown('<div class="section" style="font-size:.95rem">Saran <em>Transfer</em> Menurut AI 🤖</div>', unsafe_allow_html=True)
+        st.caption("AI merangkum langkah paling esensial untuk tim Anda minggu ini.")
+        
+        if multi_suggestions:
+            top_ai = multi_suggestions[0]
+            ai_w = cast(dict, top_ai["player"])
+            ai_rep = cast(dict, top_ai["reps"][0])
+            ai_gain = top_ai["gain"]
+            
+            # Hit check using the 3 GW horizon
+            ai_hit = hit_calculator(ai_w, ai_rep, gw_projs, horizon=3)
+            hit_msg = "Walaupun terkena penalti -4 poin (HIT), transfer ini **tetap direkomendasikan** karena secara matematis masih surplus poin bersih di akhir GW3." if ai_hit["worth_hit"] else "Jika Anda masih memiliki *Free Transfer*, lakukan perpindahan ini. Namun jika harus kena penalti (HIT), lebih baik ditunda."
+            
+            reasoning = f"**AI Assistant:** Berdasarkan analisis prediktif algoritma kami, melepas **{ai_w['web_name']}** (£{ai_w['price']/10:.1f}m) adalah keputusan terbaik minggu ini (potensi 3 GW hanya {top_ai['player_total']:.1f} poin). "
+            reasoning += f"Sebagai gantinya, masukkan **{ai_rep['web_name']}** (£{ai_rep['price']/10:.1f}m) yang sedang dalam momentum bagus dengan jadwal mendukung (proyeksi 3 GW: {top_ai['reps'][0]['proj_total']:.1f} poin). "
+            reasoning += f"Langkah ini akan mendongkrak poin tim Anda sebesar **+{ai_gain:.1f} poin**. {hit_msg}"
+            
+            st.success(reasoning)
+        else:
+            st.success("**AI Assistant:** Skuad Anda saat ini sudah sangat ideal! Proyeksi poin Anda sangat maksimal sehingga algoritma kami menyarankan untuk **menyimpan Free Transfer (Roll Transfer)** minggu ini agar Anda punya opsi ganda di GW selanjutnya.")
 
         # --- Rencana 3 GW ---
         st.divider()

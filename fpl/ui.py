@@ -782,11 +782,87 @@ def last_updated():
     return "-"
 
 
+def render_sidebar_team():
+    """Render FPL connected team card and sync tool in the sidebar."""
+    from .team import load_manager, sync_team
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("<div style='font-size:0.75rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#37003c;margin-bottom:8px'>⚽ Tim FPL Terhubung</div>", unsafe_allow_html=True)
+
+    mgr = load_manager()
+    saved_id = mgr.get("team_id", "") if mgr else ""
+
+    if mgr:
+        chip_badge = ""
+        if mgr.get("active_chip"):
+            chip_name = {"bboost": "Bench Boost", "3xc": "Triple Captain", "freehit": "Free Hit", "wildcard": "Wildcard"}.get(mgr["active_chip"], mgr["active_chip"].upper())
+            chip_badge = f"<div style='display:inline-block;background:#37003c;color:#00ff87;font-size:0.68rem;padding:2px 6px;border-radius:4px;font-weight:600;margin-top:4px'>Chip Aktif: {chip_name}</div>"
+
+        st.sidebar.markdown(
+            f"""
+            <div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px;margin-bottom:10px'>
+              <div style='font-weight:700;color:#0f172a;font-size:0.95rem'>{_html.escape(mgr.get('team_name', ''))}</div>
+              <div style='color:#64748b;font-size:0.78rem'>Manajer: <b style='color:#1e293b'>{_html.escape(mgr.get('manager_name', ''))}</b></div>
+              <div style='display:flex;justify-content:space-between;margin-top:8px;font-size:0.78rem'>
+                <div>Total Poin: <b style='color:#37003c'>{mgr.get('summary_overall_points', 0)}</b></div>
+                <div>Peringkat: <b style='color:#37003c'>#{mgr.get('summary_overall_rank', 0):,}</b></div>
+              </div>
+              <div style='display:flex;justify-content:space-between;margin-top:3px;font-size:0.78rem'>
+                <div>Bank: <b style='color:#0f766e'>£{mgr.get('bank', 0.0):.1f}m</b></div>
+                <div>Nilai: <b style='color:#0f766e'>£{mgr.get('team_value', 100.0):.1f}m</b></div>
+              </div>
+              {chip_badge}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with st.sidebar.expander("Hubungkan / Ganti Team ID", expanded=mgr is None):
+        team_id_input = st.text_input(
+            "FPL Team ID",
+            value=str(saved_id) if saved_id else "",
+            placeholder="Contoh: 925693",
+            key="sidebar_team_id_input",
+            help="Temukan di URL halaman Points FPL Anda: fantasy.premierleague.com/entry/[ID]/event/1",
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Tarik Skuad", use_container_width=True, key="btn_sync_sidebar"):
+                if team_id_input.strip():
+                    with st.spinner("Sinkronisasi data tim FPL..."):
+                        ok, res, err = sync_team(team_id_input.strip(), force=True)
+                        if ok:
+                            st.cache_data.clear()
+                            st.session_state.pop("squad", None)
+                            for pos in ["GK", "DEF", "MID", "FWD"]:
+                                st.session_state.pop(f"sel_{pos}", None)
+                            st.success(f"Terhubung ke {res['team_name']}!")
+                            st.rerun()
+                        else:
+                            st.error(err)
+                else:
+                    st.warning("Masukkan ID Tim terlebih dahulu.")
+        with c2:
+            if mgr and st.button("Refresh", use_container_width=True, key="btn_refresh_team_sidebar"):
+                with st.spinner("Memperbarui..."):
+                    ok, res, err = sync_team(saved_id, force=True)
+                    if ok:
+                        st.cache_data.clear()
+                        st.session_state.pop("squad", None)
+                        for pos in ["GK", "DEF", "MID", "FWD"]:
+                            st.session_state.pop(f"sel_{pos}", None)
+                        st.rerun()
+
+
 def autorefresh():
     try:
         from streamlit_autorefresh import st_autorefresh
     except ImportError:
+        render_sidebar_team()
         return
+
+    render_sidebar_team()
+
     interval = st.sidebar.selectbox(
         "Auto-refresh data",
         options=[0, 5, 10, 15, 30],

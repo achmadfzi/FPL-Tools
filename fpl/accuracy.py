@@ -57,15 +57,12 @@ def save_projections(gw_id, df):
     return True
 
 
-def fetch_actuals(gw_id):
-    """Fetch actual scores for a completed GW from the FPL API.
-
-    Returns dict {player_id_str: actual_points} or None if GW not finished.
-    """
+def is_gw_finished(gw_id):
+    """Check if a gameweek is finished, either marked in events or all fixtures completed."""
     try:
         bootstrap = get_bootstrap()
     except Exception:
-        return None
+        return False
 
     events = bootstrap.get("events", [])
     gw_event = None
@@ -74,7 +71,30 @@ def fetch_actuals(gw_id):
             gw_event = e
             break
 
-    if gw_event is None or not gw_event.get("finished"):
+    if gw_event is None:
+        return False
+
+    if gw_event.get("finished"):
+        return True
+
+    # Check fixtures: if all fixtures for this GW are finished or finished_provisional
+    try:
+        fixtures = get_fixtures()
+        gw_fixtures = [f for f in fixtures if f.get("event") == gw_id]
+        if gw_fixtures and all(f.get("finished") or f.get("finished_provisional") for f in gw_fixtures):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def fetch_actuals(gw_id):
+    """Fetch actual scores for a completed GW from the FPL API.
+
+    Returns dict {player_id_str: actual_points} or None if GW not finished.
+    """
+    if not is_gw_finished(gw_id):
         return None
 
     # Player points for this GW come from the bootstrap's elements
@@ -143,8 +163,8 @@ def compute_accuracy(gw_id):
     if not errors:
         return None
 
-    abs_errors = [abs(e["error"]) for e in errors]
-    sq_errors = [e["error"] ** 2 for e in errors]
+    abs_errors = [abs(float(e["error"])) for e in errors]
+    sq_errors = [float(e["error"]) ** 2 for e in errors]
 
     metrics = {
         "n": len(errors),
@@ -203,12 +223,14 @@ def suggested_weights():
     fdr_maes = {}
     overall_maes = []
     for h in completed:
-        m = h["metrics"]
-        overall_maes.append(m["mae"])
+        m = h.get("metrics")
+        if not isinstance(m, dict):
+            continue
+        overall_maes.append(float(m.get("mae", 0)))
         for pos, mae in m.get("by_pos", {}).items():
-            pos_maes.setdefault(pos, []).append(mae)
+            pos_maes.setdefault(pos, []).append(float(mae))
         for fdr, mae in m.get("by_fdr", {}).items():
-            fdr_maes.setdefault(fdr, []).append(mae)
+            fdr_maes.setdefault(str(fdr), []).append(float(mae))
 
     avg_mae = round(sum(overall_maes) / len(overall_maes), 3)
     pos_avg = {pos: round(sum(v) / len(v), 3) for pos, v in pos_maes.items()}

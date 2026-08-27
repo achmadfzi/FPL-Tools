@@ -22,7 +22,7 @@ def multi_gw_value(player, gw_projs, horizon=3):
     return round(sum(projs[:horizon]), 2)
 
 
-def multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3):
+def multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3) -> list[dict]:
     """Suggest transfers based on total gain over multiple GWs.
 
     Unlike the old suggest_transfers (1 GW only), this considers the total
@@ -37,7 +37,7 @@ def multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3):
     candidates = []
     for p in squad:
         p_total = multi_gw_value(p, gw_projs, horizon)
-        budget = p["price"] + bank + 5  # Allow 0.5m tolerance (prices in 10ths)
+        budget = p["price"] + bank
 
         reps = []
         for q in by_pos.get(p["pos"], []):
