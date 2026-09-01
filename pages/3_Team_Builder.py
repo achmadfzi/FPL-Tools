@@ -223,8 +223,6 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state.get("squ
         if st.button("💾 Simpan Tim", disabled=len(sel_new) != 15, use_container_width=True):
             save_squad(sel_new)
             st.session_state["squad"] = sel_new
-            for pos in SQUAD_SIZE:
-                st.session_state[f"sel_{pos}"] = labels_for(pos, sel_new)
             st.toast("✅ Skuad 15 pemain berhasil disimpan!", icon="💾")
             st.success("✅ Skuad 15 pemain berhasil disimpan secara permanen!")
             st.rerun()
