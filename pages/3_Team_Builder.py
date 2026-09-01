@@ -23,6 +23,7 @@ from fpl.utils import fmt_price
 st.set_page_config(page_title="Team Builder", layout="wide")
 
 SQUAD_FILE = DATA_DIR / "squad.json"
+RECOMMENDED_FILE = DATA_DIR / "recommended_squad.json"
 SQUAD_SIZE = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 3}
 
 apply_theme()
@@ -54,6 +55,15 @@ def load_squad():
     return []
 
 
+def load_recommended():
+    if RECOMMENDED_FILE.exists():
+        try:
+            return json.loads(RECOMMENDED_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            return []
+    return []
+
+
 def save_squad(ids):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SQUAD_FILE.write_text(json.dumps(ids))
@@ -71,38 +81,35 @@ from fpl.team import load_manager, sync_team
 
 mgr = load_manager()
 
-# --- Auto-sync squad from FPL Team ID on first load ---
+# --- Initialize squad on first page load ---
 if "squad" not in st.session_state:
-    if mgr and mgr.get("squad_ids"):
-        # Auto-load from FPL Team ID (no manual click needed)
+    saved = [i for i in load_squad() if i in by_id]
+    if len(saved) == 15:
+        # 1. Load user's saved squad from squad.json
+        st.session_state["squad"] = saved
+    elif mgr and mgr.get("squad_ids"):
+        # 2. Fallback to FPL Team ID if no saved squad exists yet
         auto_ids = [i for i in mgr["squad_ids"] if i in by_id]
-        if len(auto_ids) == 15:
-            st.session_state["squad"] = auto_ids
-            # Try to re-sync for latest data
-            try:
-                ok, res, err = sync_team(mgr["team_id"], force=False)
-                if ok and isinstance(res, dict) and isinstance(res.get("squad_ids"), list):
-                    synced = [i for i in res["squad_ids"] if i in by_id]
-                    if len(synced) == 15:
-                        st.session_state["squad"] = synced
-                        mgr = load_manager()  # Reload updated manager data
-            except Exception:
-                pass
-        else:
-            st.session_state["squad"] = [i for i in load_squad() if i in by_id]
+        st.session_state["squad"] = auto_ids if len(auto_ids) == 15 else saved
     else:
-        st.session_state["squad"] = [i for i in load_squad() if i in by_id]
+        st.session_state["squad"] = saved
+
+# Ensure multiselect session states are synchronized
+for pos in SQUAD_SIZE:
+    if f"sel_{pos}" not in st.session_state:
+        pos_ids = [i for i in st.session_state.get("squad", []) if i in by_id and by_id[i]["pos"] == pos]
+        st.session_state[f"sel_{pos}"] = labels_for(pos, pos_ids)
 
 # --- Manager info banner ---
 if mgr:
-    team_name = mgr.get('team_name', 'FPL Team')
-    manager_name = mgr.get('manager_name', '')
-    overall_pts = mgr.get('summary_overall_points', 0)
-    overall_rank = mgr.get('summary_overall_rank', 0)
-    bank_mgr = mgr.get('bank', 0.0)
-    gw_synced = mgr.get('gw_synced', '?')
-    chips_used = [c.get('name', '?') for c in mgr.get('chips_played', [])]
-    chips_txt = ', '.join(chips_used) if chips_used else 'Belum ada'
+    team_name = mgr.get("team_name", "FPL Team")
+    manager_name = mgr.get("manager_name", "")
+    overall_pts = mgr.get("summary_overall_points", 0)
+    overall_rank = mgr.get("summary_overall_rank", 0)
+    bank_mgr = mgr.get("bank", 0.0)
+    gw_synced = mgr.get("gw_synced", "?")
+    chips_used = [c.get("name", "?") for c in mgr.get("chips_played", [])]
+    chips_txt = ", ".join(chips_used) if chips_used else "Belum ada"
 
     st.markdown(
         f"""
@@ -125,65 +132,79 @@ if mgr:
     )
 
 # --- Squad selection ---
-with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state["squad"]) == 0):
+with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state.get("squad", [])) == 0):
     if mgr:
-        c1, c2, c3 = st.columns([1.5, 1, 1])
+        c1, c2, c3, c4 = st.columns([1.2, 1, 1.1, 0.7])
         with c1:
-            btn_label = f"🔄 Tarik Ulang Skuad FPL ({mgr.get('team_name', 'FPL Team')})"
+            btn_label = f"🔄 Skuad FPL Asli ({mgr.get('team_name', 'FPL')})"
             if st.button(btn_label, use_container_width=True):
-                st.session_state["_squad_request"] = "sync_fpl"
+                ok, res, err = sync_team(mgr["team_id"], force=True, update_squad_file=False)
+                if ok and isinstance(res, dict) and isinstance(res.get("squad_ids"), list):
+                    loaded = [i for i in res["squad_ids"] if i in by_id]
+                    st.session_state["squad"] = loaded
+                    for pos in SQUAD_SIZE:
+                        st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
+                    st.toast(f"Skuad FPL ({mgr.get('team_name')}) dimuat!", icon="🔄")
+                    st.rerun()
         with c2:
-            if st.button("Muat Tim Tersimpan", use_container_width=True):
-                st.session_state["_squad_request"] = "load"
+            if st.button("📁 Tim Tersimpan", use_container_width=True):
+                loaded = [i for i in load_squad() if i in by_id]
+                if len(loaded) == 15:
+                    st.session_state["squad"] = loaded
+                    for pos in SQUAD_SIZE:
+                        st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
+                    st.toast("Tim tersimpan dimuat!", icon="📁")
+                    st.rerun()
+                else:
+                    st.warning("Belum ada data tim tersimpan di squad.json.")
         with c3:
-            if st.button("Kosongkan Tim", use_container_width=True):
-                st.session_state["_squad_request"] = "clear"
+            if st.button("💡 Rekomendasi AI", use_container_width=True):
+                rec = [i for i in load_recommended() if i in by_id]
+                if len(rec) == 15:
+                    st.session_state["squad"] = rec
+                    for pos in SQUAD_SIZE:
+                        st.session_state[f"sel_{pos}"] = labels_for(pos, rec)
+                    st.toast("Skuad rekomendasi AI dimuat!", icon="💡")
+                    st.rerun()
+                else:
+                    st.info("Jalankan recommend.py untuk menghasilkan rekomendasi AI.")
+        with c4:
+            if st.button("🗑️ Kosongkan", use_container_width=True):
+                st.session_state["squad"] = []
+                for pos in SQUAD_SIZE:
+                    st.session_state[f"sel_{pos}"] = []
+                st.rerun()
     else:
         st.info("Masukkan FPL Team ID Anda di bawah untuk auto-sync skuad.")
         team_id_input = st.text_input("FPL Team ID", placeholder="contoh: 925693")
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Sync Tim FPL", use_container_width=True) and team_id_input:
-                ok, res, err = sync_team(team_id_input, force=True)
-                if ok:
-                    st.session_state["_squad_request"] = "sync_fpl"
+                ok, res, err = sync_team(team_id_input, force=True, update_squad_file=True)
+                if ok and isinstance(res, dict) and isinstance(res.get("squad_ids"), list):
+                    loaded = [i for i in res["squad_ids"] if i in by_id]
+                    st.session_state["squad"] = loaded
+                    for pos in SQUAD_SIZE:
+                        st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
                     st.rerun()
                 else:
                     st.error(err)
         with c2:
-            if st.button("Muat Tim Tersimpan", use_container_width=True):
-                st.session_state["_squad_request"] = "load"
-
-    if "_squad_request" in st.session_state:
-        request = st.session_state.pop("_squad_request")
-        if request == "sync_fpl" and mgr:
-            ok, res, err = sync_team(mgr["team_id"], force=True)
-            if ok and isinstance(res, dict) and isinstance(res.get("squad_ids"), list):
-                loaded = [i for i in res["squad_ids"] if i in by_id]
-                st.session_state["squad"] = loaded
-                for pos in SQUAD_SIZE:
-                    st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
-        elif request == "load":
-            loaded = [i for i in load_squad() if i in by_id]
-            st.session_state["squad"] = loaded
-            for pos in SQUAD_SIZE:
-                st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
-        else:
-            st.session_state["squad"] = []
-            for pos in SQUAD_SIZE:
-                st.session_state[f"sel_{pos}"] = []
-        st.rerun()
+            if st.button("📁 Tim Tersimpan", use_container_width=True):
+                loaded = [i for i in load_squad() if i in by_id]
+                if len(loaded) == 15:
+                    st.session_state["squad"] = loaded
+                    for pos in SQUAD_SIZE:
+                        st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
+                    st.rerun()
 
     sel_new = []
     cols = st.columns(4)
     for col, (pos, need) in zip(cols, SQUAD_SIZE.items()):
         with col:
-            stored_ids = [i for i in st.session_state["squad"] if i in by_id and by_id[i]["pos"] == pos]
-            default = labels_for(pos, stored_ids)
             chosen = st.multiselect(
                 f"Pilih {need} pemain {pos}",
                 list(pos_options[pos].keys()),
-                default=default,
                 key=f"sel_{pos}",
                 placeholder=f"Maks {need} pemain",
             )
@@ -199,10 +220,14 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state["squad"]
     c2.metric("Nilai tim", f"£{total_cost:.1f}m")
     c3.metric("Sisa budget", f"£{bank:.1f}m")
     with c4:
-        if st.button("Simpan Tim", disabled=len(sel_new) != 15, use_container_width=True):
+        if st.button("💾 Simpan Tim", disabled=len(sel_new) != 15, use_container_width=True):
             save_squad(sel_new)
             st.session_state["squad"] = sel_new
-            st.success("Tim tersimpan.")
+            for pos in SQUAD_SIZE:
+                st.session_state[f"sel_{pos}"] = labels_for(pos, sel_new)
+            st.toast("✅ Skuad 15 pemain berhasil disimpan!", icon="💾")
+            st.success("✅ Skuad 15 pemain berhasil disimpan secara permanen!")
+            st.rerun()
 
 # If not in expander, use session state
 if "sel_new" not in dir() or not sel_new:

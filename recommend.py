@@ -262,10 +262,13 @@ def main():
         print("Transfer hanya diperlukan jika pemain harus dikeluarkan dari 15 skuad - rotasi XI gratis.")
     print(f"\n>>> REKOMENDASI UTAMA: {winner_title} (total proyeksi {winner['total']:.2f} poin)")
 
+    rec_file = DATA_DIR / "recommended_squad.json"
     squad_file = DATA_DIR / "squad.json"
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    squad_file.write_text(json.dumps([p["id"] for p in winner["squad"]]))
-    print(f"Skuad rekomendasi tersimpan ke {squad_file} (Team Builder > Muat Tim Tersimpan)")
+    rec_file.write_text(json.dumps([p["id"] for p in winner["squad"]]))
+    if not squad_file.exists():
+        squad_file.write_text(json.dumps([p["id"] for p in winner["squad"]]))
+    print(f"Skuad rekomendasi tersimpan ke {rec_file}")
 
 
 if __name__ == "__main__":

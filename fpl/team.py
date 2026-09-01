@@ -55,10 +55,11 @@ def get_latest_completed_or_current_gw():
         return 1
 
 
-def sync_team(team_id, gw_id=None, force=True):
+def sync_team(team_id, gw_id=None, force=True, update_squad_file=False):
     """Sync FPL team info and squad picks using FPL Team ID.
 
-    Saves picks to data/squad.json and full profile to data/manager.json.
+    Saves full profile to data/manager.json.
+    Only saves to data/squad.json if update_squad_file=True or if squad.json does not exist.
     Returns (success: bool, data: dict, error: str).
     """
     try:
@@ -137,11 +138,12 @@ def sync_team(team_id, gw_id=None, force=True):
     # Save to data/manager.json
     save_manager(manager_data)
 
-    # Save to data/squad.json
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        SQUAD_FILE.write_text(json.dumps(squad_ids))
-    except Exception:
-        pass
+    # Save to data/squad.json only if requested or if squad.json does not exist
+    if update_squad_file or not SQUAD_FILE.exists():
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            SQUAD_FILE.write_text(json.dumps(squad_ids))
+        except Exception:
+            pass
 
     return True, manager_data, None
