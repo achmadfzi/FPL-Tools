@@ -17,7 +17,7 @@ from fpl.strategy import (
     wc_estimate,
 )
 from fpl.ui import apply_theme, autorefresh, esc, load_data, player_card_html
-from fpl.utils import fmt_price
+from fpl.utils import fmt_deadline_wib, fmt_price
 
 st.set_page_config(page_title="Chip Strategi", layout="wide")
 
@@ -81,7 +81,7 @@ for g in cal:
     bb = bb_estimate(g, squad)
     wc = wc_estimate(g, gd, df, squad if has_squad else None)
     fh = fh_estimate(g, gd, df)
-    deadline = next((e["deadline_time"][:10] for e in gd.events if e["id"] == g["event"]), "-")
+    deadline = next((fmt_deadline_wib(e["deadline_time"], format_type="short") for e in gd.events if e["id"] == g["event"]), "-")
 
     if tc:
         tc_all.append({"gw": g["event"], "score": tc["score"], "reason": f"Kapten: {tc['player']}"})
@@ -95,7 +95,7 @@ for g in cal:
     rows.append(
         {
             "GW": g["event"],
-            "Deadline": deadline,
+            "Deadline (WIB)": deadline,
             "DGW": len(g["dgw_ids"]),
             "BGW": len(g["bgw_ids"]),
             "Laga Mudah": g["easy"],
@@ -118,7 +118,7 @@ def highlight_max(s):
 
 styled_cal = (
     cal_df.style
-    .map(lambda v: "color:#0f172a;font-weight:400;text-align:center", subset=["GW", "Deadline", "DGW", "BGW"])
+    .map(lambda v: "color:#0f172a;font-weight:400;text-align:center", subset=["GW", "Deadline (WIB)", "DGW", "BGW"])
     .map(lambda v: "color:#94a3b8;text-align:center" if pd.isna(v) else "color:#0f172a;font-weight:400;text-align:center", subset=["TC", "BB", "WC", "FH"])
     .apply(highlight_max, subset=["TC"])
     .apply(highlight_max, subset=["BB"])

@@ -1,4 +1,42 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+# Indonesian timezone (WIB = UTC+7)
+WIB_TZ = timezone(timedelta(hours=7))
+HARI_ID = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+BULAN_ID = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
+
+def fmt_deadline_wib(deadline_iso, format_type="full"):
+    """Convert FPL ISO deadline string (UTC) to formatted Indonesian WIB string.
+
+    Args:
+        deadline_iso: ISO 8601 string from FPL API, e.g. "2026-08-30T10:00:00Z"
+        format_type: "full" (Sabtu, 30 Agu 2026 · 17:00 WIB),
+                     "short" (30 Agu · 17:00 WIB),
+                     "date_only" (30 Agu 2026),
+                     "time_only" (17:00 WIB)
+
+    Returns: Formatted string in Indonesian WIB time
+    """
+    if not deadline_iso:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
+        wib = dt.astimezone(WIB_TZ)
+        hari = HARI_ID[wib.weekday()]
+        bulan = BULAN_ID[wib.month - 1]
+        if format_type == "full":
+            return f"{hari}, {wib.day} {bulan} {wib.year} pukul {wib.strftime('%H:%M')} WIB"
+        elif format_type == "short":
+            return f"{wib.day} {bulan} ({wib.strftime('%H:%M')} WIB)"
+        elif format_type == "date_only":
+            return f"{wib.day} {bulan} {wib.year}"
+        elif format_type == "time_only":
+            return f"{wib.strftime('%H:%M')} WIB"
+        return f"{hari}, {wib.day} {bulan} ({wib.strftime('%H:%M')} WIB)"
+    except Exception:
+        return str(deadline_iso)[:16].replace("T", " ")
+
 
 POSITION_NAMES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 

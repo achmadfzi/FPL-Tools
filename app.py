@@ -15,7 +15,7 @@ from fpl.ui import (
     pos_badge_html,
     refresh,
 )
-from fpl.utils import fmt_price
+from fpl.utils import fmt_deadline_wib, fmt_price
 
 st.set_page_config(page_title="FPL Dashboard - Beranda", layout="wide")
 
@@ -40,7 +40,7 @@ st.markdown(
       <div class="kicker">Fantasy Premier League · Toolkit</div>
       <h1>FPL Dashboard</h1>
       <div class="sub">Rekomendasi kapten, transfer, dan line-up berbasis data untuk Gameweek {ev.get('id')}.</div>
-      <div class="updated">Data terakhir diperbarui: {last_updated()} | Deadline GW {ev.get('id')}: {ev.get('deadline_time', '')[:16].replace('T', ' ')}</div>
+      <div class="updated">Data terakhir diperbarui: {last_updated()} | ⏰ Deadline GW {ev.get('id')}: <b>{fmt_deadline_wib(ev.get('deadline_time'), format_type='full')}</b></div>
       {countdown_html(ev.get('deadline_time'))}
     </div>
     """,

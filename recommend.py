@@ -5,7 +5,7 @@ from fpl.api import DATA_DIR, clear_cache, get_game_data
 from fpl.model import build_projection_table
 from fpl.optimizer import best_xi
 from fpl.solver import best_entry, dp_select, pareto_add
-from fpl.utils import fmt_price
+from fpl.utils import fmt_deadline_wib, fmt_price
 from fpl.validation import BUDGET, NEED, validate_squad
 
 POS_ORDER = ["GK", "DEF", "MID", "FWD"]
@@ -197,7 +197,7 @@ def main():
         scenarios.append(("ALTERNATIF: WAJIB TZOLIS (pilihan komunitas)", [tzolis]))
 
     print(f"REKOMENDASI TIM - GAMEWEEK {gd.next_event['id']}")
-    print(f"Deadline: {gd.next_event.get('deadline_time')}")
+    print(f"Deadline: {fmt_deadline_wib(gd.next_event.get('deadline_time'), format_type='full')}")
 
     results = []
     for title, forced in scenarios:

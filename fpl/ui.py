@@ -5,7 +5,7 @@ import streamlit as st
 
 from .api import CACHE_FILE, BASE_URL, get_game_data
 from .model import build_projection_table
-from .utils import FDR_LABELS, STATUS_LABELS, fmt_price
+from .utils import FDR_LABELS, STATUS_LABELS, fmt_deadline_wib, fmt_price
 
 
 @st.cache_data(ttl=300, show_spinner="Memuat data FPL...")
@@ -726,11 +726,11 @@ def stat_header_html(squad, ev, bank, total_proj):
     n = len(squad)
     total_val = sum(p.get("price", 0) for p in squad) / 10
     gw_id = ev.get("id", "?")
-    deadline = ev.get("deadline_time", "")[:16].replace("T", " ")
+    deadline = fmt_deadline_wib(ev.get("deadline_time", ""), format_type="short")
     return (
         f'<div class="stat-bar">'
         f'<div class="stat-item"><div class="sv">GW {gw_id}</div><div class="sl">Gameweek</div></div>'
-        f'<div class="stat-item"><div class="sv">{deadline}</div><div class="sl">Deadline</div></div>'
+        f'<div class="stat-item"><div class="sv">{deadline}</div><div class="sl">Deadline (WIB)</div></div>'
         f'<div class="stat-item"><div class="sv">{total_proj:.1f} pts</div><div class="sl">Predicted</div></div>'
         f'<div class="stat-item"><div class="sv">£{bank:.1f}m</div><div class="sl">Bank</div></div>'
         f'<div class="stat-item"><div class="sv">£{total_val:.1f}m</div><div class="sl">Team Value</div></div>'
