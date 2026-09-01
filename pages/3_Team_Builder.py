@@ -67,19 +67,69 @@ def labels_for(pos, ids):
     ]
 
 
-if "squad" not in st.session_state:
-    st.session_state["squad"] = [i for i in load_squad() if i in by_id]
-
 from fpl.team import load_manager, sync_team
 
 mgr = load_manager()
+
+# --- Auto-sync squad from FPL Team ID on first load ---
+if "squad" not in st.session_state:
+    if mgr and mgr.get("squad_ids"):
+        # Auto-load from FPL Team ID (no manual click needed)
+        auto_ids = [i for i in mgr["squad_ids"] if i in by_id]
+        if len(auto_ids) == 15:
+            st.session_state["squad"] = auto_ids
+            # Try to re-sync for latest data
+            try:
+                ok, res, err = sync_team(mgr["team_id"], force=False)
+                if ok and isinstance(res, dict) and isinstance(res.get("squad_ids"), list):
+                    synced = [i for i in res["squad_ids"] if i in by_id]
+                    if len(synced) == 15:
+                        st.session_state["squad"] = synced
+                        mgr = load_manager()  # Reload updated manager data
+            except Exception:
+                pass
+        else:
+            st.session_state["squad"] = [i for i in load_squad() if i in by_id]
+    else:
+        st.session_state["squad"] = [i for i in load_squad() if i in by_id]
+
+# --- Manager info banner ---
+if mgr:
+    team_name = mgr.get('team_name', 'FPL Team')
+    manager_name = mgr.get('manager_name', '')
+    overall_pts = mgr.get('summary_overall_points', 0)
+    overall_rank = mgr.get('summary_overall_rank', 0)
+    bank_mgr = mgr.get('bank', 0.0)
+    gw_synced = mgr.get('gw_synced', '?')
+    chips_used = [c.get('name', '?') for c in mgr.get('chips_played', [])]
+    chips_txt = ', '.join(chips_used) if chips_used else 'Belum ada'
+
+    st.markdown(
+        f"""
+        <div class="fpl-card" style="padding:14px 18px;margin-bottom:12px;border-left:4px solid #37003c">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+                <div>
+                    <div style="font-weight:700;font-size:1.1rem;color:#0f172a">{esc(team_name)}</div>
+                    <div style="color:#64748b;font-size:.82rem">Manager: {esc(manager_name)} · ID: {mgr['team_id']} · Sync GW{gw_synced}</div>
+                </div>
+                <div style="display:flex;gap:16px;font-size:.82rem">
+                    <div><span style="color:#64748b">Total Poin:</span> <span style="font-weight:600;color:#37003c">{overall_pts}</span></div>
+                    <div><span style="color:#64748b">Rank:</span> <span style="font-weight:600;color:#0f172a">{overall_rank:,}</span></div>
+                    <div><span style="color:#64748b">Bank:</span> <span style="font-weight:600;color:#16a34a">£{bank_mgr:.1f}m</span></div>
+                    <div><span style="color:#64748b">Chip:</span> <span style="font-weight:500;color:#d97706">{esc(chips_txt)}</span></div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # --- Squad selection ---
 with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state["squad"]) == 0):
     if mgr:
         c1, c2, c3 = st.columns([1.5, 1, 1])
         with c1:
-            btn_label = f"Tarik Skuad FPL ({mgr.get('team_name', 'FPL Team')})"
+            btn_label = f"🔄 Tarik Ulang Skuad FPL ({mgr.get('team_name', 'FPL Team')})"
             if st.button(btn_label, use_container_width=True):
                 st.session_state["_squad_request"] = "sync_fpl"
         with c2:
@@ -89,13 +139,20 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state["squad"]
             if st.button("Kosongkan Tim", use_container_width=True):
                 st.session_state["_squad_request"] = "clear"
     else:
+        st.info("Masukkan FPL Team ID Anda di bawah untuk auto-sync skuad.")
+        team_id_input = st.text_input("FPL Team ID", placeholder="contoh: 925693")
         c1, c2 = st.columns(2)
         with c1:
+            if st.button("Sync Tim FPL", use_container_width=True) and team_id_input:
+                ok, res, err = sync_team(team_id_input, force=True)
+                if ok:
+                    st.session_state["_squad_request"] = "sync_fpl"
+                    st.rerun()
+                else:
+                    st.error(err)
+        with c2:
             if st.button("Muat Tim Tersimpan", use_container_width=True):
                 st.session_state["_squad_request"] = "load"
-        with c2:
-            if st.button("Kosongkan Tim", use_container_width=True):
-                st.session_state["_squad_request"] = "clear"
 
     if "_squad_request" in st.session_state:
         request = st.session_state.pop("_squad_request")
@@ -173,6 +230,14 @@ if len(sel_new) == 15:
             "status": p.get("status"),
             "photo_code": p.get("photo_code"),
             "selected_by": p.get("selected_by"),
+            # Enhanced model fields for rotation risk
+            "minutes_per_start": p.get("minutes_per_start", 0),
+            "starts": p.get("starts", 0),
+            "form": p.get("form", 0),
+            "ppg": p.get("ppg", 0),
+            "bonus_per_game": p.get("bonus_per_game", 0),
+            "ict_per_game": p.get("ict_per_game", 0),
+            "minutes": p.get("minutes", 0),
         }
         for i in sel_new
         if (p := by_id[i])
@@ -290,6 +355,27 @@ if len(sel_new) == 15:
             )
             pool_avg = df["proj"].dropna().mean() * 11
             c3.metric("vs rata-rata pool", f"{result['total'] / pool_avg * 100:.0f}%", f"avg {pool_avg:.1f} pts")
+
+            # --- Rotation Risk for YOUR squad ---
+            from fpl.optimizer import rotation_risk
+            squad_risks = rotation_risk(squad)
+            if squad_risks:
+                st.markdown(
+                    '<div style="margin-top:8px;padding:10px 14px;background:#fef3c7;border-radius:8px;border:1px solid #f59e0b">' 
+                    '<div style="font-weight:600;color:#92400e;font-size:.85rem;margin-bottom:4px">⚠️ Risiko Rotasi di Skuad Anda</div>',
+                    unsafe_allow_html=True,
+                )
+                for r in squad_risks:
+                    p = r["player"]
+                    sev_icon = "🔴" if r["severity"] == "high" else "🟡"
+                    reasons = " · ".join(r["reasons"])
+                    in_xi = p["id"] in {x["id"] for x in result["xi"]}
+                    xi_tag = " <b>(STARTER)</b>" if in_xi else " (bench)"
+                    st.markdown(
+                        f'<div style="font-size:.82rem;color:#78350f;padding:2px 0">{sev_icon} <b>{esc(p["web_name"])}</b>{xi_tag} — {reasons}</div>',
+                        unsafe_allow_html=True,
+                    )
+                st.markdown('</div>', unsafe_allow_html=True)
 
         with col_picker:
             # --- PLAYER PICKER / EXPLORER PANEL ---

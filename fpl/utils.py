@@ -25,6 +25,15 @@ THREAT_NORM_FACTOR = 40.0
 # Baseline xGI per 90 mins for normalization (top attackers ~0.8, average ~0.25)
 XGI_PER90_BASELINE = 0.8
 
+# ICT Index baseline for normalization (top performers ~8-10, average ~3-4)
+ICT_BASELINE = 6.0
+
+# Creativity per game normalization — typical top creators ~50-60/game
+CREATIVITY_NORM_FACTOR = 50.0
+
+# Bonus points per game baseline — top bonus earners ~1.5-2.0/game
+BONUS_BASELINE = 1.5
+
 POSITION_COLORS = {"GK": "yellow", "DEF": "blue", "MID": "green", "FWD": "red"}
 
 

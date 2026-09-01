@@ -45,6 +45,10 @@ def best_xi(squad):
     picked = {p["id"] for p in xi}
     bench = sorted([p for p in squad if p["id"] not in picked], key=lambda p: p["proj"], reverse=True)
     ordered = sorted(xi, key=lambda p: p["proj"], reverse=True)
+
+    # Optimize bench order using FPL auto-sub rules
+    bench = ordered_bench(bench)
+
     return {
         "xi": xi,
         "bench": bench,
@@ -53,6 +57,70 @@ def best_xi(squad):
         "captain": ordered[0] if ordered else None,
         "vice": ordered[1] if len(ordered) > 1 else None,
     }
+
+
+def ordered_bench(bench):
+    """Order bench players following FPL auto-sub rules for maximum points safety.
+
+    FPL auto-sub rules:
+    - Bench position 1 (first sub) is used first if a starter doesn't play
+    - GK must be in bench position 4 (only used if starting GK doesn't play)
+    - Outfield bench players are ordered by projected points (highest first)
+
+    This ensures the highest-projected bench player gets subbed in first.
+    """
+    if not bench:
+        return bench
+
+    bench_gk = [p for p in bench if p["pos"] == "GK"]
+    bench_outfield = [p for p in bench if p["pos"] != "GK"]
+
+    # Sort outfield by projection descending (best first = first to be auto-subbed)
+    bench_outfield.sort(key=lambda p: p.get("proj", 0), reverse=True)
+
+    # FPL rule: GK goes to position 4 (last), outfield ordered by projection
+    return bench_outfield + bench_gk
+
+
+def rotation_risk(squad, threshold=75):
+    """Identify players in the squad who have high rotation risk.
+
+    Rotation risk is determined by:
+    1. Minutes per start < threshold (default 75 minutes)
+    2. Status is 'doubtful' (d)
+    3. Low chance of playing (< 75%)
+
+    Returns: list of dicts with player info and risk reason.
+    """
+    risks = []
+    for p in squad:
+        reasons = []
+        mps = p.get("minutes_per_start", 0)
+        starts = p.get("starts", 0)
+        chance = p.get("chance")
+        status = p.get("status", "a")
+
+        # Only flag rotation if we have enough data (at least 1 start)
+        if starts > 0 and mps > 0 and mps < threshold:
+            reasons.append(f"rata-rata {mps:.0f} mnt/start (risiko rotasi)")
+
+        if status == "d":
+            reasons.append("status: diragukan")
+
+        if chance is not None:
+            chance_val = float(chance)
+            if chance_val < 75:
+                reasons.append(f"peluang main {chance_val:.0f}%")
+
+        if reasons:
+            risks.append({
+                "player": p,
+                "reasons": reasons,
+                "severity": "high" if len(reasons) >= 2 or (chance is not None and float(chance) < 50) else "medium",
+            })
+
+    risks.sort(key=lambda r: (0 if r["severity"] == "high" else 1, r["player"].get("proj", 0)))
+    return risks
 
 
 def suggest_transfers(squad, pool, bank):
@@ -127,15 +195,20 @@ def projection_explanation(p):
     n_fx = int(p.get("n_fixtures") or 1)
     dgw = " (DGW — 2 laga!)" if n_fx >= 2 else ""
     lines = [
-        f"Estimasi dasar (0.45×form {p.get('form', 0):.2f} + 0.25×ppg {p.get('ppg', 0):.2f} + 0.30×xGI_signal {p.get('xgi_signal', 0):.2f}) = {p.get('own', 0):.2f}",
+        f"Base signal (0.40×form {p.get('form', 0):.2f} + 0.20×ppg {p.get('ppg', 0):.2f} + 0.25×xGI {p.get('xgi_signal', 0):.2f} + 0.15×ICT {p.get('ict_signal', 0):.2f}) = {p.get('own', 0):.2f}",
         f"CS probability = {p.get('cs_prob', 0):.1%} (bonus tergantung posisi)",
         f"Threat score (normalized) = {p.get('threat_norm', 0):.3f}",
+        f"Bonus tendency (normalized) = {p.get('bonus_norm', 0):.3f}",
+        f"Creativity score (normalized) = {p.get('creativity_norm', 0):.3f}",
+        f"Minutes consistency = ×{p.get('minutes_factor', 1.0):.2f}",
         f"Faktor lawan (FDR {p.get('fdr', '-')}) = ×{p.get('fixture_mult', '-')}",
         f"Kandang/tandang = ×{p.get('home_mult', '-')}",
         f"Peluang bermain = ×{float(p.get('chance', 1)):.0%}" if p.get("chance") is not None else None,
         f"Proyeksi FPL (ep_next) = {p.get('ep_next_fpl', 0):.2f}",
         f"Jumlah laga = {n_fx}{dgw}" if n_fx >= 2 else None,
+        f"Bobot: 65% model sendiri + 25% ep_next + 10% safety",
         f"Perkiraan akhir = {p.get('proj', 0):.2f} poin",
     ]
     return "\n".join(line for line in lines if line)
+
 

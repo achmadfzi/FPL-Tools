@@ -12,11 +12,12 @@ def future_proj(row, gd, event_id):
     if n == 0:
         return None
 
-    # Use enhanced base: form + ppg + xGI signal (from current data)
+    # Use enhanced base: form + ppg + xGI signal + ICT signal (from current data)
     form = float(row["form"] or 0)
     ppg = float(row["ppg"] or 0)
     xgi_signal = float(row.get("xgi_signal") or 0)
-    base = 0.45 * form + 0.25 * ppg + 0.30 * xgi_signal
+    ict_signal = float(row.get("ict_signal") or 0)
+    base = 0.40 * form + 0.20 * ppg + 0.25 * xgi_signal + 0.15 * ict_signal
 
     if base <= 0:
         base = float(row.get("ep_next_fpl") or 0)

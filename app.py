@@ -27,8 +27,10 @@ ev = gd.next_event
 
 # --- Auto-save projections for accuracy tracking ---
 try:
-    from fpl.accuracy import save_projections
+    from fpl.accuracy import auto_update_history, save_projections
     save_projections(ev.get("id"), df)
+    # Auto-fetch actuals for all past GWs
+    auto_update_history()
 except Exception:
     pass
 
@@ -169,6 +171,66 @@ for rank, (_, p) in enumerate(stars.iterrows(), 1):
     )
 rows += "</div></div>"
 st.markdown(rows, unsafe_allow_html=True)
+
+# --- Rotation Risk Alert ---
+st.markdown('<div class="section">⚠️ Peringatan <em>Risiko Rotasi</em></div>', unsafe_allow_html=True)
+try:
+    from fpl.optimizer import rotation_risk
+
+    all_players = df.to_dict("records")
+    risks = rotation_risk(all_players)
+    if risks:
+        risk_rows = '<div class="fpl-card"><div style="display:flex;flex-direction:column;gap:8px">'
+        for r in risks[:8]:
+            p = r["player"]
+            sev_color = "#dc2626" if r["severity"] == "high" else "#f59e0b"
+            sev_icon = "🔴" if r["severity"] == "high" else "🟡"
+            reasons_txt = " · ".join(r["reasons"])
+            risk_rows += (
+                f'<div style="display:flex;align-items:center;gap:10px;font-size:.82rem;padding:6px 0;border-bottom:1px solid #f1f5f9">'
+                f'<span>{sev_icon}</span>'
+                f'<span style="font-weight:500;color:#0f172a;min-width:130px">{esc(p["web_name"])}</span>'
+                f'<span style="min-width:54px">{pos_badge_html(p["pos"])}</span>'
+                f'<span style="color:#64748b;min-width:50px">{esc(p["team_short"])}</span>'
+                f'<span style="color:{sev_color};flex:1">{reasons_txt}</span>'
+                f'</div>'
+            )
+        risk_rows += '</div></div>'
+        st.markdown(risk_rows, unsafe_allow_html=True)
+        st.caption("Pemain di atas memiliki risiko tidak bermain penuh. Pastikan bench order Anda optimal!")
+    else:
+        st.success("Tidak ada pemain dengan risiko rotasi tinggi saat ini.")
+except Exception:
+    pass
+
+# --- Bench Order Recommendation ---
+st.markdown('<div class="section">🪑 Rekomendasi <em>Urutan Bench</em></div>', unsafe_allow_html=True)
+st.caption(
+    "Urutan bench menentukan siapa yang masuk saat ada starter yang tidak bermain (auto-sub). "
+    "GK bench selalu di posisi 4; outfield diurutkan berdasarkan proyeksi tertinggi."
+)
+try:
+    from fpl.optimizer import ordered_bench
+
+    top_players = df.dropna(subset=["proj"]).sort_values("proj", ascending=False).head(15).to_dict("records")
+    # Show an example optimal bench for top-15 projected
+    bench_example = [p for p in top_players if p["proj"] is not None]
+    if len(bench_example) >= 4:
+        bench_4 = bench_example[-4:]  # Lowest projected from top-15
+        optimal = ordered_bench(bench_4)
+        bench_html = '<div class="fpl-card"><div class="bench-row">'
+        for i, p in enumerate(optimal, 1):
+            pos_label = "(GK cadangan)" if p["pos"] == "GK" else f"Sub ke-{i}"
+            bench_html += (
+                f'<div class="bench-cell">'
+                f'<span class="n">{esc(p["web_name"])}</span>'
+                f'<span class="x">{pos_label} · proyeksi {p["proj"]:.2f}</span>'
+                f'</div>'
+            )
+        bench_html += '</div></div>'
+        st.markdown(bench_html, unsafe_allow_html=True)
+except Exception:
+    pass
 
 # --- Accuracy Summary ---
 st.markdown('<div class="section" style="font-size:.95rem">Akurasi <em>Model</em> Proyeksi</div>', unsafe_allow_html=True)

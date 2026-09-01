@@ -183,6 +183,27 @@ class GameData:
             xgi = float(p.get("expected_goal_involvements") or 0)
             # Compute xGI per 90 minutes (avoid division by zero)
             xgi_per90 = round(xgi / (minutes / 90.0), 2) if minutes >= 90 else 0.0
+
+            # Bonus & ICT data for enhanced model
+            bonus = int(p.get("bonus") or 0)
+            bps = int(p.get("bps") or 0)
+            ict_index = float(p.get("ict_index") or 0)
+            creativity = float(p.get("creativity") or 0)
+            starts = p.get("starts") or 0
+
+            # Per-game metrics (avoid division by zero)
+            games_played = max(starts, 1) if starts > 0 else (1.0 if minutes >= 45 else 1.0)
+            if minutes >= 45:
+                games_est = max(minutes / 90.0, 1.0)
+            else:
+                games_est = 1.0
+            bonus_per_game = round(bonus / games_est, 2)
+            creativity_per_game = round(creativity / games_est, 2)
+            ict_per_game = round(ict_index / games_est, 2)
+
+            # Minutes consistency: avg minutes per start (90 = always full, <70 = rotation risk)
+            minutes_per_start = round(minutes / max(starts, 1), 1) if starts > 0 else 0.0
+
             players.append(
                 {
                     "id": p["id"],
@@ -206,12 +227,20 @@ class GameData:
                     "xG": float(p.get("expected_goals") or 0),
                     "xA": float(p.get("expected_assists") or 0),
                     "threat": float(p.get("threat") or 0),
-                    "creativity": float(p.get("creativity") or 0),
+                    "creativity": creativity,
                     "influence": float(p.get("influence") or 0),
                     "minutes": minutes,
-                    "starts": p.get("starts") or 0,
+                    "starts": starts,
                     "photo_code": p.get("photo") or "",
                     "price_change": p.get("cost_change_start") or 0,
+                    # Enhanced model fields
+                    "bonus": bonus,
+                    "bps": bps,
+                    "ict_index": ict_index,
+                    "bonus_per_game": bonus_per_game,
+                    "creativity_per_game": creativity_per_game,
+                    "ict_per_game": ict_per_game,
+                    "minutes_per_start": minutes_per_start,
                 }
             )
         return players

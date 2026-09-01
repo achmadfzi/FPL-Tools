@@ -204,6 +204,47 @@ def history():
     return out
 
 
+def auto_update_history():
+    """Automatically fetch actuals and compute accuracy for all past GWs.
+
+    Called on dashboard load to keep accuracy data fresh.
+    Processes any GW that has projections saved but no actuals yet.
+    Returns: number of GWs newly updated.
+    """
+    data = _load()
+    updated = 0
+
+    for key in sorted(data.keys()):
+        if not key.startswith("gw_"):
+            continue
+        gw_id = int(key.split("_")[1])
+        entry = data[key]
+
+        # Skip if already has actuals and metrics
+        if "actuals" in entry and "metrics" in entry:
+            continue
+
+        # Skip if no projections saved
+        if "projections" not in entry:
+            continue
+
+        # Try to fetch actuals for this GW
+        if "actuals" not in entry:
+            actuals = fetch_actuals(gw_id)
+            if actuals is None:
+                continue  # GW not finished yet
+            data[key]["actuals"] = actuals
+            _save(data)
+
+        # Compute metrics if we have actuals but no metrics
+        if "metrics" not in entry or entry.get("metrics") is None:
+            metrics = compute_accuracy(gw_id)
+            if metrics:
+                updated += 1
+
+    return updated
+
+
 def suggested_weights():
     """Based on historical accuracy, suggest weight adjustments.
 
