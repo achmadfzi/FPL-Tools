@@ -145,12 +145,16 @@ def project_player(player, fixtures, gd, weights=None):
         is_home = fixture["is_home"]
         fdr = fixture["difficulty"]
         opponent = fixture["opponent"]
+        team_id = player.get("team")
         home_mult = 1.08 if is_home else 0.93
         active_fdr_mult = _get_fdr_mult(weights)
-        fixture_mult = active_fdr_mult.get(fdr, 1.0)
+        fdr_mult = active_fdr_mult.get(fdr, 1.0)
+        # Dynamic correction based on rolling actual results (1.0 if data sparse)
+        dyn_mult = gd.fixture_dyn_mult(team_id, opponent, is_home) if team_id else 1.0
+        fixture_mult = fdr_mult * dyn_mult
 
         # Clean sheet probability bonus
-        cs_prob = gd.cs_probability(player["team"], opponent, is_home, fdr=fdr)
+        cs_prob = gd.cs_probability(team_id, opponent, is_home, fdr=fdr)
         cs_pts = CS_POINTS.get(pos, 0)
         cs_w = weights.get("cs_weight", 0.15) if weights else 0.15
         cs_bonus = cs_prob * cs_pts * cs_w
@@ -166,6 +170,8 @@ def project_player(player, fixtures, gd, weights=None):
             "opponent_short": gd.teams_by_id[opponent]["short_name"],
             "kickoff": fixture.get("kickoff"),
             "fixture_mult": fixture_mult,
+            "fdr_mult": fdr_mult,
+            "dyn_mult": round(dyn_mult, 4),
             "home_mult": home_mult,
             "cs_prob": round(cs_prob, 3),
         })
@@ -196,6 +202,7 @@ def project_player(player, fixtures, gd, weights=None):
         "own_total": round(own_total, 2),
         "ep_next": round(ep_next, 2),
         "fixture_mult": primary["fixture_mult"],
+        "dyn_mult": primary["dyn_mult"],
         "home_mult": primary["home_mult"],
         "cs_prob": primary["cs_prob"],
         "threat_norm": round(threat_norm, 3),
@@ -204,7 +211,8 @@ def project_player(player, fixtures, gd, weights=None):
         "bonus_norm": round(bonus_norm, 3),
         "creativity_norm": round(creativity_norm, 3),
         "minutes_factor": round(minutes_factor, 2),
-        "chance": round(chance, 2),
+        # Keep raw chance semantics (None/percent 0-100) — consumers convert.
+        "chance": player.get("chance"),
         "is_home": primary["is_home"],
         "fdr": primary["fdr"],
         "opponent": primary["opponent"],
@@ -238,6 +246,7 @@ def build_projection_table(gd, use_tuned_weights=True):
                     "own_total": meta["own_total"],
                     "ep_next_fpl": meta["ep_next"],
                     "fixture_mult": meta["fixture_mult"],
+                    "dyn_mult": meta["dyn_mult"],
                     "home_mult": meta["home_mult"],
                     "cs_prob": meta["cs_prob"],
                     "threat_norm": meta["threat_norm"],
@@ -262,6 +271,7 @@ def build_projection_table(gd, use_tuned_weights=True):
                     "own_total": 0.0,
                     "ep_next_fpl": 0.0,
                     "fixture_mult": None,
+                    "dyn_mult": None,
                     "home_mult": None,
                     "cs_prob": 0.0,
                     "threat_norm": 0.0,
@@ -270,7 +280,7 @@ def build_projection_table(gd, use_tuned_weights=True):
                     "bonus_norm": 0.0,
                     "creativity_norm": 0.0,
                     "minutes_factor": 0.0,
-                    "chance": 0.0,
+                    "chance": p["chance"],
                     "is_home": None,
                     "fdr": None,
                     "opponent_short": None,
@@ -294,5 +304,16 @@ def build_projection_table(gd, use_tuned_weights=True):
             df["ml_proj"] = None
             df["ml_lower"] = None
             df["ml_upper"] = None
+
+    # History-derived columns (expected minutes etc.) — file-cache only,
+    # never raises, no network calls inside projection building.
+    try:
+        from .player_history import attach as _hist_attach
+
+        df = _hist_attach(gd, df)
+    except Exception:
+        for col in ("hist_rows", "exp_minutes", "rec_form", "rec_xgi90"):
+            if col not in df.columns:
+                df[col] = None if col != "hist_rows" else 0
 
     return df

@@ -30,6 +30,65 @@ for col, p, tag in zip(cols, top5, tags):
     with col:
         st.markdown(player_card_html(p, tag=tag), unsafe_allow_html=True)
 
+# --- Simulasi Monte Carlo: Kapten & Wakil (EV + risiko blank) ---
+st.markdown('<div class="section">🎲 Kapten <em>Monte Carlo</em> — EV & Risiko Blank</div>', unsafe_allow_html=True)
+st.caption(
+    "Simulasi ribuan skenario Gameweek (Poisson gol dari kekuatan tim aktual musim ini, "
+    "alokasi gol/assist via share xG, CS, menit main, bonus) untuk memilih kapten & wakil "
+    "dengan **expected value (EV) tertinggi** — bukan sekadar proyeksi tertinggi."
+)
+try:
+    from fpl.simulator import captain_analysis, load_saved_squad, reference_xi
+
+    squad_rows, xi_ids, src_label = load_saved_squad(df)
+    if squad_rows is None:
+        with st.spinner("Belum ada skuad tersimpan — memakai XI referensi (greedy terbaik)..."):
+            squad_rows = reference_xi(df)
+            xi_ids = None
+        src_line = "XI referensi dari seluruh pool (simpan skuad di Team Builder untuk hasil sesuai tim Anda)."
+    else:
+        src_line = f"Skuad: {src_label}"
+    with st.spinner("Menjalankan simulasi Monte Carlo..."):
+        mc = captain_analysis(gd, df, squad_rows, xi_ids=xi_ids, n=600, seed=7)
+    top_mc = mc["top"]
+    st.caption(f"{src_line} · {mc['n']} skenario · seed {mc['seed']} (reproducible).")
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("EV Kapten Terbaik (×2)", f"{top_mc['ev_captain']:.1f} pts",
+                  help="Ekspektasi poin kapten = 2× poin bila main, 2× wakil bila kapten blank.")
+    with m2:
+        st.metric("EV XI tanpa kapten", f"{mc['xi_ev']:.1f} pts",
+                  help="Total proyeksi 11 starter dari simulasi (belum termasuk bonus kapten).")
+    with m3:
+        st.metric("Rentang poin kapten p10–p90", f"{mc['cap_distribution']['p10']} – {mc['cap_distribution']['p90']}",
+                  help="Distribusi skenario: 10% kapten di bawah p10, 10% di atas p90.")
+    with m4:
+        st.metric("Risiko blank kapten terbaik", f"{top_mc['p_blank'] * 100:.0f}%",
+                  help="Peluang kapten terpilih tidak dimainkan — alasan memilih wakil yang aman.")
+
+    html = '<div class="fpl-card" style="margin-top:8px">'
+    for i, c in enumerate(mc["candidates"][:6], 1):
+        tag = "KAPTEN MC" if i == 1 else ("WAKIL MC" if i == 2 else f"ALT {i - 1}")
+        color = "#37003c" if i == 1 else "#0f172a"
+        vc_txt = c["best_vc_name"] or "-"
+        html += (
+            f'<div class="info-line" style="justify-content:space-between">'
+            f'<span><b style="color:{color}">{tag}</b> — {esc(c["web_name"])} '
+            f'<span style="color:#64748b">({esc(c["team_short"])})</span></span>'
+            f'<span>EV <b style="color:#37003c">{c["ev_captain"]:.2f}</b> · main '
+            f'{c["p_plays"] * 100:.0f}% · wakil terbaik <b>{esc(vc_txt)}</b> · '
+            f'proyeksi {c["proj"]:.2f}</span></div>'
+        )
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+    st.caption(
+        "Kunci: wakil kapten (VC) otomatis naik saat kapten blank. VC terbaik = pemain berpeluang "
+        "main hampir pasti dengan EV tinggi — seringkali bukan pemain terbaik ke-2."
+    )
+except Exception as _exc:
+    st.warning(f"Simulasi Monte Carlo tidak dapat dijalankan: {_exc}")
+
 st.markdown('<div class="section" style="font-size:.92rem">Detail <em>perhitungan</em></div>', unsafe_allow_html=True)
 for p in top5[:3]:
     with st.expander(f"{p['web_name']} ({p['team_short']}) - proyeksi {p['proj']:.2f} poin"):

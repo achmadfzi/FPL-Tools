@@ -81,6 +81,30 @@ for col, (_, row), tag in zip(cards, top3.iterrows(), tags):
     with col:
         st.markdown(player_card_html(row, tag=tag), unsafe_allow_html=True)
 
+# --- Monte-Carlo captain EV (quick) ---
+try:
+    from fpl.simulator import captain_analysis, load_saved_squad, reference_xi
+
+    mc_squad, mc_xi, mc_src = load_saved_squad(df)
+    if mc_squad is None:
+        mc_squad = reference_xi(df)
+        mc_xi = None
+    mc = captain_analysis(gd, df, mc_squad, xi_ids=mc_xi, n=300, seed=7)
+    t = mc["top"]
+    mc_c1, mc_c2, mc_c3 = st.columns(3)
+    with mc_c1:
+        st.metric("🎲 EV Kapten (Monte Carlo)", f"{t['web_name']} — {t['ev_captain']:.1f} pts",
+                  help=f"Wakil terbaik: {t['best_vc_name'] or '-'} (EV {t['ev_best_vc_effect']:.2f}). Proyeksi titik: {t['proj']:.2f}")
+    with mc_c2:
+        st.metric("Peluang kapten dimainkan", f"{t['p_plays'] * 100:.0f}%",
+                  help="Dari simulasi menit main per pemain (chance_of_playing + rata-rata menit).")
+    with mc_c3:
+        st.metric("Rentang p10–p90 poin kapten", f"{mc['cap_distribution']['p10']:.0f} – {mc['cap_distribution']['p90']:.0f}",
+                  help="Distribusi 300 skenario. EV ≠ kepastian: kapten dengan EV mirip tapi rentang lebih sempit = pilihan lebih aman.")
+    st.caption(f"Sumber skuad simulasi: {mc_src if mc_src else 'XI referensi (simpan skuad via Team Builder untuk hasil sesuai tim Anda)'} · lihat detail lengkap di halaman **Kapten & Transfer**.")
+except Exception:
+    pass
+
 st.markdown('<div class="section">Alasan <em>di balik</em> pilihan kapten</div>', unsafe_allow_html=True)
 for i, (_, row) in enumerate(top3.iterrows(), 1):
     label = "Kapten" if i == 1 else ("Wakil Kapten" if i == 2 else f"Alternatif {i}")

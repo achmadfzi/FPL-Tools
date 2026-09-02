@@ -180,13 +180,29 @@ def player_display(p):
     return f"{p['web_name']} ({p['team_short']}, {pos_badge(p['pos'])}, {fmt_price(p['price'])}, proyeksi {p['proj']:.1f})"
 
 
+def _chance_pct(p):
+    """Chance as percent 0-100 (handles raw percent or 0-1 fraction)."""
+    c = p.get("chance")
+    if c is None:
+        return None
+    try:
+        c = float(c)
+    except (TypeError, ValueError):
+        return None
+    import math
+    if math.isnan(c):
+        return None
+    return c if c > 1 else c * 100.0
+
+
 def fixture_line(p):
     parts = []
     if p.get("opponent_short"):
         parts.append(f"vs {p['opponent_short']} {home_away_badge(bool(p.get('is_home')))}")
         parts.append(fdr_badge(p.get("fdr")))
-    if p.get("chance") is not None and float(p.get("chance", 1)) < 100:
-        parts.append(f"peluang main {float(p['chance']) * 100:.0f}%")
+    chance_pct = _chance_pct(p)
+    if chance_pct is not None and chance_pct < 100:
+        parts.append(f"peluang main {chance_pct:.0f}%")
     parts.append(status_badge(p.get("status", "a")))
     return " | ".join(parts) if parts else "-"
 
@@ -201,9 +217,10 @@ def projection_explanation(p):
         f"Bonus tendency (normalized) = {p.get('bonus_norm', 0):.3f}",
         f"Creativity score (normalized) = {p.get('creativity_norm', 0):.3f}",
         f"Minutes consistency = ×{p.get('minutes_factor', 1.0):.2f}",
-        f"Faktor lawan (FDR {p.get('fdr', '-')}) = ×{p.get('fixture_mult', '-')}",
-        f"Kandang/tandang = ×{p.get('home_mult', '-')}",
-        f"Peluang bermain = ×{float(p.get('chance', 1)):.0%}" if p.get("chance") is not None else None,
+        f"Faktor lawan (FDR {p.get('fdr', '-')}) = ×{p.get('fixture_mult', 1.0):.3f}",
+        f"Koreksi kekuatan tim dinamis = ×{p.get('dyn_mult', 1.0):.3f}" if p.get("dyn_mult") is not None else None,
+        f"Kandang/tandang = ×{p.get('home_mult', 1.0):.2f}",
+        f"Peluang bermain = {chance_pct:.0f}% (faktor ×{chance_pct / 100:.2f})" if (chance_pct := _chance_pct(p)) is not None else None,
         f"Proyeksi FPL (ep_next) = {p.get('ep_next_fpl', 0):.2f}",
         f"Jumlah laga = {n_fx}{dgw}" if n_fx >= 2 else None,
         f"Bobot: 65% model sendiri + 25% ep_next + 10% safety",

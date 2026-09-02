@@ -114,8 +114,10 @@ def main():
     print(f"3. vs {len(totals)} tim acak: percentile ke-{pct:.0f}; vs strategi pandit: unggul >={dp_total - best_heur[1]:.2f} poin.")
     print(f"4. Rekomendasi tetap terbaik dalam {wins}/15 simulasi gangguan proyeksi +/-10%.")
     print(f"\nBATAS KEJUJURAN MODEL:")
-    print(f"- 'Terbaik' berlaku TERHADAP MODEL proyeksi. Model = 0.65x(form+ppg+xGI+ICT+bonus+CS+threat+creativity) + 0.25x(ep_next) + 0.10x(safety) x minutes_factor.")
-    print(f"- Di GW1-2, form & xGI masih rendah sehingga model bergantung lebih pada ep_next resmi FPL.")
+    print(f"- 'Terbaik' berlaku TERHADAP MODEL proyeksi. Model = (base form+ppg+xGI+ICT+bonus+CS+threat+creativity) x")
+    print(f"  (multiplier FDR aktif x koreksi kekuatan tim dinamis x kandang/tandang x CS kalibrasi) x ep_next blend x peluang main.")
+    print(f"- Di GW awal, form & xGI minim sehingga model bergantung lebih pada ep_next resmi FPL;")
+    print(f"  koreksi dinamis (teamform.py) baru aktif setelah >=2 laga per tim dan naik perlahan.")
     print(f"- Pandit bisa punya info NON-DATA (berita cedera terbaru, rotasi, taktik) yang belum masuk API.")
     print(f"- Bukti akhir hanya datang dari skor aktual - pantau akurasi model di halaman Akurasi Model.")
 

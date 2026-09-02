@@ -4,9 +4,9 @@ Tools bantu bermain Fantasy Premier League (FPL) berbasis data publik resmi FPL 
 
 ## Fitur
 
-- **Beranda** - Info Gameweek & deadline, rekomendasi kapten, tabel FDR (tingkat kesulitan lawan), top-10 proyeksi poin, ringkasan akurasi model
+- **Beranda** - Info Gameweek & deadline, rekomendasi kapten (+ **EV Monte Carlo**), tabel FDR (tingkat kesulitan lawan), top-10 proyeksi poin, ringkasan akurasi model
 - **Player Explorer** - Jelajahi 600+ pemain, filter posisi/tim/harga/status, detail proyeksi + tren form 8 GW terakhir, kolom xGI/90 dan CS probability
-- **Kapten & Transfer** - Kandidat kapten terbaik, value picks (poin per £1juta), fixture ticker (FDR 6 GW ke depan), differential picks, pemain berisiko cedera
+- **Kapten & Transfer** - Kandidat kapten terbaik (**+ simulasi Monte Carlo kapten/wakil berbasis EV & risiko blank**), value picks (poin per £1juta), fixture ticker (FDR 6 GW ke depan), differential picks, pemain berisiko cedera
 - **Team Builder** - Masukkan skuad 15 pemain Anda (budget £100m), optimasi XI terbaik (tampilan lapangan) + kapten + saran transfer multi-GW + hit calculator
 - **Chip Strategi** - Rekomendasi kapan memakai Triple Captain, Bench Boost, Wildcard, & Free Hit — termasuk chip sequence planner
 - **Akurasi Model** - Evaluasi akurasi proyeksi vs skor aktual: MAE, RMSE, breakdown per posisi & FDR, saran penyesuaian bobot
@@ -48,6 +48,40 @@ final = (0.50 × sum(per_fixture) + 0.35 × ep_next + 0.15 × ep_next_safety) ×
 - **Peluang bermain**: dari `chance_of_playing_next_round` (pemain cedera/suspended otomatis dikeluarkan)
 - **ep_next**: proyeksi poin resmi dari FPL itu sendiri
 - Pemain yang timnya tidak bertanding (bye) tidak diproyeksikan
+
+## Kekuatan Tim Dinamis (bukan Hanya FDR Statis)
+
+Rating kesulitan FPL (`strength_*`) sering 0 di awal musim dan tidak mencerminkan
+kekuatan aktual. Karena itu model memakai **indeks kekuatan rolling dari hasil
+nyata** (`fpl/teamform.py`):
+
+- Gol dicetak/dikemasukan per tim dari fixture yang sudah selesai, di-smooth ke
+  rata-rata liga (anti-overreaction 1-2 laga), lalu dinormalisasi (rata-rata = 1.0).
+- **Fixture multiplier dinamis**: rasio attack tim vs defence lawan → koreksi
+  perkalian di sekitar multiplier FDR (bobot data aktual naik seiring jumlah laga).
+- **CS probability terkali-brasi**: model `exp(-λ)` dengan λ = ekspektasi gol
+  lawan (L kandang/tandang × attack lawan × kebocoran pertahanan tim), diskalakan
+  ke clean-sheet rate aktual liga — menggantikan rasio linier lama.
+- Degradasi aman: tanpa data cukup, semua kembali ke perilaku FDR lama.
+
+## Simulasi Monte Carlo — Kapten, Wakil & EV (Bukan Sekadar Proyeksi)
+
+`fpl/simulator.py` mensimulasikan ribuan skenario Gameweek berikutnya:
+
+- Gol per laga ~ Poisson(λ) dari kekuatan tim dinamis; gol & assist dialokasikan
+  ke pemain via share xG (seluruh roster tim), assist dari rekan setim (tanpa
+  self-assist); menit main & peluang tidak bermain dari expected-minutes per
+  pemain (`fpl/player_history.py` — cache per-GW element-summary, TTL 6 jam);
+  clean sheet, bonus (draw berbobot atas kedua tim) ikut disimulasikan.
+- **Kapten & Wakil**: EV kapten = 2× poin bila kapten main; bila blank → 2× poin
+  wakil (VC) yang otomatis menggantikannya. VC terbaik sering BUKAN pemain
+  proyeksi tertinggi ke-2 — tetapi pemain yang hampir pasti main dengan EV tinggi.
+- Output: EV per kandidat, peluang main/blank, rentang p10–p90, EV XI.
+- Ditampilkan di **Beranda** (ringkas) & **Kapten & Transfer** (detail), memakai
+  skuad tersimpan Anda (Tim FPL terhubung → squad.json → recommended_squad.json;
+  fallback XI referensi).
+- Rencana 3 GW (`horizon.py`) kini konsisten dengan model utama: bobot aktif
+  (adaptive tuning) + multiplier dinamis + komponen sinyal yang sama.
 
 ## Faktor Reliabilitas (Menit Bermain + Kepercayaan Komunitas)
 

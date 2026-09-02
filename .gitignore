@@ -11,3 +11,4 @@ data/tuned_weights.json
 data/ml_model.pkl
 data/ml_model_meta.json
 .DS_Store
+data/player_history.json

@@ -93,6 +93,7 @@ class GameData:
         self.fixtures_by_team = self._fixtures_by_team()
         self.team_strength = self._team_strength()
         self.players = self._build_players()
+        self.team_indices = self._team_indices()
 
     def _next_event(self):
         for e in self.events:
@@ -138,34 +139,48 @@ class GameData:
             }
         return out
 
-    def cs_probability(self, team_id, opponent_id, is_home, fdr=None):
-        """Estimate clean sheet probability based on team strength ratings.
+    def _team_indices(self):
+        """Dynamic rolling team strength indices from actual results.
 
-        Uses ratio of defending team's defence strength vs opponent's attack strength.
-        Falls back to FDR-based estimation when strength data is unavailable (e.g. GW1).
-        Returns a value between 0.05 and 0.55.
+        Falls back to {} when no finished fixtures exist yet.
         """
-        ts = self.team_strength
-        if team_id not in ts or opponent_id not in ts:
-            return self._cs_from_fdr(fdr, is_home)
+        try:
+            from .teamform import build_team_indices
 
-        if is_home:
-            defence = ts[team_id]["defence_home"]
-            attack = ts[opponent_id]["attack_away"]
-        else:
-            defence = ts[team_id]["defence_away"]
-            attack = ts[opponent_id]["attack_home"]
+            return build_team_indices(self) or {}
+        except Exception:
+            return {}
 
-        # If strength values are 0 (season start), fall back to FDR
-        if defence <= 0 or attack <= 0:
-            return self._cs_from_fdr(fdr, is_home)
+    def fixture_dyn_mult(self, team_id, opponent_id, is_home):
+        """Multiplier correction around the FDR baseline for a fixture.
 
-        # Ratio > 1 means defence stronger than opponent attack → higher CS chance
-        ratio = defence / attack
+        Returns a factor centred on 1.0 (no-op when data too sparse).
+        """
+        if not self.team_indices:
+            return 1.0
+        try:
+            from .teamform import fixture_dyn_mult
 
-        # Map ratio to probability: ratio=1.0 → ~0.30, ratio=1.2 → ~0.42, ratio=0.8 → ~0.18
-        cs_prob = 0.30 * ratio
-        return max(0.05, min(0.55, cs_prob))
+            return fixture_dyn_mult(self, self.team_indices, team_id, opponent_id, is_home)
+        except Exception:
+            return 1.0
+
+    def cs_probability(self, team_id, opponent_id, is_home, fdr=None):
+        """Estimate clean sheet probability based on dynamic team indices.
+
+        Uses the calibrated exp(-lambda) model from teamform (blended with the
+        FDR-based prior early in the season). Falls back to FDR-only estimation
+        when dynamic data is unavailable.
+        Returns a value between 0.05 and 0.60.
+        """
+        if self.team_indices:
+            try:
+                from .teamform import cs_probability as _cs_cal
+
+                return _cs_cal(self, self.team_indices, team_id, opponent_id, is_home, fdr=fdr)
+            except Exception:
+                pass
+        return self._cs_from_fdr(fdr, is_home)
 
     @staticmethod
     def _cs_from_fdr(fdr, is_home):
