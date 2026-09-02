@@ -190,6 +190,192 @@ else:
                 for fdr, mae in sorted(sw.get("by_fdr", {}).items()):
                     st.write(f"  FDR {fdr}: MAE {mae:.2f}")
 
+# =============================================================================
+# ADAPTIVE WEIGHTS SECTION
+# =============================================================================
+st.markdown('<div class="section">🔧 Adaptive <em>Weights</em> — Optimasi Bobot Model</div>', unsafe_allow_html=True)
+st.caption(
+    "Optimasi otomatis bobot model proyeksi berdasarkan error historis. "
+    "Grid search mencari kombinasi bobot yang meminimalkan MAE pada data GW lalu."
+)
+
+try:
+    from fpl.adaptive import (
+        DEFAULT_WEIGHTS,
+        compare_weights,
+        load_tuned_weights,
+        optimize_weights,
+        save_tuned_weights,
+    )
+
+    tuned = load_tuned_weights()
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if st.button("🔧 Optimalkan Bobot", use_container_width=True):
+            progress_bar = st.progress(0, text="Mencari bobot optimal...")
+
+            def update_progress(pct):
+                progress_bar.progress(pct, text=f"Grid search {pct:.0%}...")
+
+            result = optimize_weights(progress_callback=update_progress)
+            progress_bar.empty()
+
+            if result["status"] == "insufficient_data":
+                st.warning(result["message"])
+            else:
+                saved = save_tuned_weights(result["weights"], {
+                    "default_mae": result["default_mae"],
+                    "tuned_mae": result["tuned_mae"],
+                    "improvement_pct": result["improvement_pct"],
+                    "n_samples": result["n_samples"],
+                    "enabled": True,
+                })
+                st.success(
+                    f"Bobot optimal ditemukan! MAE: {result['default_mae']:.3f} → {result['tuned_mae']:.3f} "
+                    f"(improvement {result['improvement_pct']:+.1f}%). {result['n_combos_tested']} kombinasi diuji."
+                )
+                st.rerun()
+
+    with c2:
+        if tuned and tuned.get("weights"):
+            metrics = tuned.get("metrics", {})
+            is_enabled = metrics.get("enabled", False)
+            if st.toggle("Gunakan bobot yang sudah di-tune", value=is_enabled, key="use_tuned"):
+                if not is_enabled:
+                    metrics["enabled"] = True
+                    save_tuned_weights(tuned["weights"], metrics)
+                    st.toast("Bobot tuned diaktifkan! Refresh data untuk menerapkan.", icon="✅")
+                    st.rerun()
+            else:
+                if is_enabled:
+                    metrics["enabled"] = False
+                    save_tuned_weights(tuned["weights"], metrics)
+                    st.toast("Kembali ke bobot default.", icon="↩️")
+                    st.rerun()
+
+    if tuned and tuned.get("weights"):
+        metrics = tuned.get("metrics", {})
+        status_icon = "🟢" if metrics.get("enabled") else "⚪"
+        st.markdown(
+            f"""
+            <div class="fpl-card">
+              <h3>{status_icon} Bobot Tuned {'(Aktif)' if metrics.get('enabled') else '(Nonaktif)'}</h3>
+              <div class="info-line">MAE Default: <b>{metrics.get('default_mae', '-')}</b> → Tuned: <b style="color:#15803d">{metrics.get('tuned_mae', '-')}</b></div>
+              <div class="info-line">Improvement: <b style="color:#37003c">{metrics.get('improvement_pct', 0):+.1f}%</b> | Data: {metrics.get('n_samples', 0)} sample</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Comparison table
+        with st.expander("📊 Perbandingan Bobot Default vs Tuned"):
+            comparison = compare_weights(DEFAULT_WEIGHTS, tuned["weights"])
+            comp_df = pd.DataFrame(comparison)
+            display_cols = ["param", "default", "tuned", "change"]
+            styled = (
+                comp_df[display_cols].style
+                .map(lambda v: "color:#15803d;font-weight:500" if isinstance(v, (int, float)) and v > 0
+                     else ("color:#dc2626;font-weight:500" if isinstance(v, (int, float)) and v < 0 else ""),
+                     subset=["change"])
+                .format({"default": "{:.3f}", "tuned": "{:.3f}", "change": "{:+.3f}"})
+                .hide(axis="index")
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+    else:
+        st.info(
+            "Belum ada bobot yang di-tune. Klik 'Optimalkan Bobot' untuk memulai grid search. "
+            "Membutuhkan minimal 2 GW data lengkap (proyeksi + aktual)."
+        )
+except Exception as e:
+    st.warning(f"Modul adaptive weights belum tersedia: {e}")
+
+# =============================================================================
+# ML MODEL SECTION
+# =============================================================================
+st.markdown('<div class="section">🤖 Machine Learning <em>xP Model</em></div>', unsafe_allow_html=True)
+st.caption(
+    "Model ML (Gradient Boosting) yang belajar dari error historis untuk meningkatkan akurasi proyeksi. "
+    "Ditraining dari data GW yang sudah selesai."
+)
+
+try:
+    from fpl.ml_model import model_status, train_model
+
+    status = model_status()
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if st.button("🤖 Train ML Model", use_container_width=True):
+            with st.spinner("Training model ML..."):
+                result = train_model()
+
+            if result["status"] == "insufficient_data":
+                st.warning(result["message"])
+            else:
+                st.success(
+                    f"Model ML berhasil di-train! {result['n_samples']} sample. "
+                    f"GBR MAE: {result['gbr_mae']:.3f} vs Formula MAE: {result['formula_mae']:.3f} "
+                    f"(improvement {result['improvement_pct']:+.1f}%)"
+                )
+                st.rerun()
+
+    with c2:
+        if status["available"]:
+            st.markdown(
+                f"""
+                <div style="display:flex;gap:16px;align-items:center;padding:8px 0">
+                  <span style="font-size:1.2rem">🟢</span>
+                  <div>
+                    <div style="font-weight:600;color:#15803d">Model ML Aktif</div>
+                    <div style="font-size:.8rem;color:#64748b">{status['n_samples']} training samples</div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    if status["available"]:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Formula MAE", f"{status['formula_mae']:.3f}", "baseline")
+        c2.metric("ML (GBR) MAE", f"{status['gbr_mae']:.3f}",
+                   f"{status['improvement_pct']:+.1f}%",
+                   delta_color="inverse" if status["improvement_pct"] > 0 else "normal")
+        c3.metric("Training Samples", status["n_samples"])
+
+        # Feature importance chart
+        importances = status.get("importances", {})
+        if importances:
+            st.markdown('<div class="section" style="font-size:.85rem">Feature <em>Importance</em></div>', unsafe_allow_html=True)
+            sorted_imp = sorted(importances.items(), key=lambda x: x[1], reverse=True)
+            names = [x[0] for x in sorted_imp]
+            values = [x[1] for x in sorted_imp]
+
+            fig_imp = go.Figure()
+            fig_imp.add_trace(go.Bar(
+                y=names, x=values,
+                orientation="h",
+                marker_color="#37003c",
+            ))
+            fig_imp.update_layout(
+                height=max(200, len(names) * 28),
+                paper_bgcolor="#fff", plot_bgcolor="#f8f9fb",
+                font=dict(color="#1a1a2e", size=11),
+                margin=dict(l=10, r=10, t=10, b=10),
+                yaxis=dict(autorange="reversed"),
+                xaxis_title="Importance",
+            )
+            st.plotly_chart(fig_imp, use_container_width=True)
+            st.caption(
+                "Feature importance menunjukkan fitur mana yang paling berpengaruh dalam prediksi ML. "
+                "Semakin tinggi = semakin penting."
+            )
+    else:
+        st.info(status.get("message", "Model ML belum di-train."))
+
+except Exception as e:
+    st.warning(f"Modul ML belum tersedia: {e}")
+
 st.divider()
 st.markdown(
     "<p style='color:#8b93a7;font-size:.72rem'>"

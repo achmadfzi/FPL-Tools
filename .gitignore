@@ -5,4 +5,9 @@ data/squad.json
 data/reliability.json
 data/paststats.json
 data/accuracy.json
+data/gw_history_cache.json
+data/recommended_squad.json
+data/tuned_weights.json
+data/ml_model.pkl
+data/ml_model_meta.json
 .DS_Store

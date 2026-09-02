@@ -3,3 +3,4 @@ streamlit-autorefresh>=1.0
 requests>=2.31
 pandas>=2.0,<2.3
 plotly>=5.20
+scikit-learn>=1.4

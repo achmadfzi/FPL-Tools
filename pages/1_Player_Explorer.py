@@ -74,9 +74,12 @@ elif last_filter == "Tanpa riwayat poin":
 
 c1, c2 = st.columns([2, 1])
 with c1:
+    sort_options = ["proj", "form", "ppg", "xGI_per90", "selected_by", "price", "last_points", "last_value", "last_ppg"]
+    if "ml_proj" in view.columns and view["ml_proj"].notna().any():
+        sort_options.insert(1, "ml_proj")
     sort_col = st.selectbox(
         "Urutkan berdasarkan",
-        ["proj", "form", "ppg", "xGI_per90", "selected_by", "price", "last_points", "last_value", "last_ppg"],
+        sort_options,
         format_func=lambda c: {
             "proj": "Proyeksi poin GW ini",
             "form": "Form (5 GW)",
@@ -87,16 +90,28 @@ with c1:
             "last_points": "Poin musim lalu",
             "last_value": "Value musim lalu (poin/£1jt)",
             "last_ppg": "PPG musim lalu",
-        }[c],
+            "ml_proj": "ML Proyeksi (AI)",
+        }.get(c, c),
     )
 with c2:
     ascending = st.checkbox("Urutkan naik", value=False)
 
 view = view.sort_values(sort_col, ascending=ascending)
 
-show = view[["web_name", "team_short", "pos", "price", "proj", "xGI_per90", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance", "status"]].copy()
+# Build display table
+has_ml = "ml_proj" in view.columns and view["ml_proj"].notna().any()
+cols = ["web_name", "team_short", "pos", "price", "proj"]
+if has_ml:
+    cols.append("ml_proj")
+cols += ["xGI_per90", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance", "status"]
+
+show = view[cols].copy()
 show["price"] = show["price"] / 10
-show.columns = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi", "xGI/90", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang", "Status"]
+col_names = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi"]
+if has_ml:
+    col_names.append("ML Proj")
+col_names += ["xGI/90", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang", "Status"]
+show.columns = col_names
 
 
 def style_pos(v):
@@ -146,29 +161,34 @@ def fmt_chance(v):
         return "-"
 
 
+style_subsets = ["Pemain", "Tim", "xGI/90", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "Peluang"]
+proj_subsets = ["Proyeksi"]
+format_dict = {
+    "Harga": "£{:.1f}m",
+    "Proyeksi": "{:.2f}",
+    "xGI/90": "{:.2f}",
+    "Poin Lalu": "{:.0f}",
+    "PPG Lalu": "{:.2f}",
+    "Form": "{:.2f}",
+    "PPG": "{:.2f}",
+    "Kepemilikan": "{:.1f}%",
+    "FDR": fmt_fdr,
+    "Peluang": fmt_chance,
+}
+if has_ml:
+    format_dict["ML Proj"] = "{:.2f}"
+    proj_subsets.append("ML Proj")
+
 styled = (
     show.style
-    .map(lambda v: "color:#0f172a;font-weight:400", subset=["Pemain", "Tim", "xGI/90", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "Peluang"])
+    .map(lambda v: "color:#0f172a;font-weight:400", subset=style_subsets)
     .map(lambda v: "color:#64748b;font-weight:400", subset=["Harga"])
     .map(style_pos, subset=["Pos"])
     .map(style_fdr, subset=["FDR"])
     .map(style_status, subset=["Status"])
     .map(lambda v: "color:#d97706;font-weight:500", subset=["Poin Lalu"])
-    .map(lambda v: "color:#37003c;font-weight:600", subset=["Proyeksi"])
-    .format(
-        {
-            "Harga": "£{:.1f}m",
-            "Proyeksi": "{:.2f}",
-            "xGI/90": "{:.2f}",
-            "Poin Lalu": "{:.0f}",
-            "PPG Lalu": "{:.2f}",
-            "Form": "{:.2f}",
-            "PPG": "{:.2f}",
-            "Kepemilikan": "{:.1f}%",
-            "FDR": fmt_fdr,
-            "Peluang": fmt_chance,
-        }
-    )
+    .map(lambda v: "color:#37003c;font-weight:600", subset=proj_subsets)
+    .format(format_dict)
     .hide(axis="index")
 )
 

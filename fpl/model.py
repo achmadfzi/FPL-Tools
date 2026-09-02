@@ -11,6 +11,24 @@ from .utils import (
 )
 
 
+def _get_weights():
+    """Get active model weights (tuned if available and enabled, else default)."""
+    try:
+        from .adaptive import get_active_weights
+        return get_active_weights()
+    except Exception:
+        return None
+
+
+def _get_fdr_mult(weights=None):
+    """Get FDR multiplier dict from weights or default."""
+    if weights and "fdr_mult" in weights:
+        fdr = weights["fdr_mult"]
+        # Ensure keys are ints
+        return {int(k): v for k, v in fdr.items()}
+    return FDR_MULT
+
+
 def _minutes_consistency_factor(player):
     """Calculate a multiplier based on how consistently a player plays full games.
 
@@ -39,23 +57,24 @@ def _minutes_consistency_factor(player):
         return 0.65  # Heavy rotation / impact sub
 
 
-def project_player(player, fixtures, gd):
+def project_player(player, fixtures, gd, weights=None):
     """Project a player's points for the next GW.
 
     Args:
         player: dict with player stats
         fixtures: list of fixture dicts (supports DGW with multiple fixtures)
         gd: GameData instance (for cs_probability, teams_by_id)
+        weights: optional dict of tuned weights (from adaptive module)
 
-    Enhanced formula v2:
-        base = 0.40 × form + 0.20 × ppg + 0.25 × xGI_signal + 0.15 × ict_signal
-        cs_bonus = cs_prob × cs_points_for_pos × 0.15
-        threat_bonus = threat_norm × 0.08
-        bonus_tendency = bonus_per_game_norm × 0.08
-        creativity_bonus = creativity_norm × 0.06
+    Enhanced formula v2 (weights are configurable via adaptive tuning):
+        base = form_w × form + ppg_w × ppg + xgi_w × xGI_signal + ict_w × ict_signal
+        cs_bonus = cs_prob × cs_points_for_pos × cs_weight
+        threat_bonus = threat_norm × threat_weight
+        bonus_tendency = bonus_per_game_norm × bonus_weight
+        creativity_bonus = creativity_norm × creativity_weight
         base_adj = base + cs_bonus + threat_bonus + bonus_tendency + creativity_bonus
         per_fixture = base_adj × FDR_mult × home_mult
-        final = (0.65 × sum(per_fixture) + 0.25 × ep_next + 0.10 × ep_next_safety) × chance × minutes_factor
+        final = (own_w × sum(per_fixture) + ep_w × ep_next + safety_w × ep_next_safety) × chance × minutes_factor
     """
     if not fixtures:
         return None
@@ -83,7 +102,13 @@ def project_player(player, fixtures, gd):
     ict_per_game = float(player.get("ict_per_game") or 0)
     ict_signal = min(ict_per_game / ICT_BASELINE, 1.5) * max(form, ppg, 2.0) if ICT_BASELINE > 0 else 0.0
 
-    base = 0.40 * form + 0.20 * ppg + 0.25 * xgi_signal + 0.15 * ict_signal
+    # Use adaptive weights if provided
+    form_w = weights.get("form_w", 0.40) if weights else 0.40
+    ppg_w = weights.get("ppg_w", 0.20) if weights else 0.20
+    xgi_w = weights.get("xgi_w", 0.25) if weights else 0.25
+    ict_w = weights.get("ict_w", 0.15) if weights else 0.15
+
+    base = form_w * form + ppg_w * ppg + xgi_w * xgi_signal + ict_w * ict_signal
 
     ep_next = float(player.get("ep_next") or 0)
     pos = player.get("pos", "MID")
@@ -94,17 +119,20 @@ def project_player(player, fixtures, gd):
     games_played = max(minutes / 90.0, 1.0) if minutes > 0 else 1.0
     threat_per_game = threat / games_played
     threat_norm = min(threat_per_game / THREAT_NORM_FACTOR, 1.0)
-    threat_bonus = threat_norm * 0.08
+    threat_w = weights.get("threat_weight", 0.08) if weights else 0.08
+    threat_bonus = threat_norm * threat_w
 
     # --- Bonus points tendency ---
     bonus_per_game = float(player.get("bonus_per_game") or 0)
     bonus_norm = min(bonus_per_game / BONUS_BASELINE, 1.5)
-    bonus_tendency = bonus_norm * 0.08
+    bonus_w = weights.get("bonus_weight", 0.08) if weights else 0.08
+    bonus_tendency = bonus_norm * bonus_w
 
     # --- Creativity bonus (assists/chance creation signal) ---
     creativity_per_game = float(player.get("creativity_per_game") or 0)
     creativity_norm = min(creativity_per_game / CREATIVITY_NORM_FACTOR, 1.0)
-    creativity_bonus = creativity_norm * 0.06
+    creativity_w = weights.get("creativity_weight", 0.06) if weights else 0.06
+    creativity_bonus = creativity_norm * creativity_w
 
     # --- Minutes consistency multiplier ---
     minutes_factor = _minutes_consistency_factor(player)
@@ -118,12 +146,14 @@ def project_player(player, fixtures, gd):
         fdr = fixture["difficulty"]
         opponent = fixture["opponent"]
         home_mult = 1.08 if is_home else 0.93
-        fixture_mult = FDR_MULT.get(fdr, 1.0)
+        active_fdr_mult = _get_fdr_mult(weights)
+        fixture_mult = active_fdr_mult.get(fdr, 1.0)
 
         # Clean sheet probability bonus
         cs_prob = gd.cs_probability(player["team"], opponent, is_home, fdr=fdr)
         cs_pts = CS_POINTS.get(pos, 0)
-        cs_bonus = cs_prob * cs_pts * 0.15
+        cs_w = weights.get("cs_weight", 0.15) if weights else 0.15
+        cs_bonus = cs_prob * cs_pts * cs_w
 
         base_adj = base + cs_bonus + threat_bonus + bonus_tendency + creativity_bonus
 
@@ -146,10 +176,14 @@ def project_player(player, fixtures, gd):
 
     # Blend own model with FPL's ep_next
     # v2: More weight on own model (65%) vs FPL ep_next (25% + 10% safety)
+    own_w = weights.get("own_w", 0.65) if weights else 0.65
+    ep_w = weights.get("ep_w", 0.25) if weights else 0.25
+    safety_w = weights.get("safety_w", 0.10) if weights else 0.10
+
     if base > 0:
         # For DGW, ep_next from FPL should already account for double, but we scale defensively
         ep_weight = ep_next * (1.0 if n_fixtures == 1 else 1.5)
-        final = (0.65 * own_total + 0.25 * ep_weight + 0.10 * ep_next) * chance * minutes_factor
+        final = (own_w * own_total + ep_w * ep_weight + safety_w * ep_next) * chance * minutes_factor
     else:
         # No form/ppg data (e.g. GW1) — lean heavily on ep_next
         final = ep_next * chance * minutes_factor * (1.0 if n_fixtures == 1 else 1.8)
@@ -182,11 +216,19 @@ def project_player(player, fixtures, gd):
     }
 
 
-def build_projection_table(gd):
+def build_projection_table(gd, use_tuned_weights=True):
+    """Build projection table for all players.
+
+    Args:
+        gd: GameData instance
+        use_tuned_weights: if True, use adaptive tuned weights if available
+    """
+    weights = _get_weights() if use_tuned_weights else None
+
     records = []
     for p in gd.players:
         fixtures = gd.fixture_list_for_team(p["team"])
-        meta = project_player(p, fixtures, gd)
+        meta = project_player(p, fixtures, gd, weights=weights)
         rec = dict(p)
         if meta:
             rec.update(
@@ -239,4 +281,18 @@ def build_projection_table(gd):
         records.append(rec)
     df = pd.DataFrame(records)
     df["proj"] = pd.to_numeric(df["proj"], errors="coerce")
+
+    # Add ML projections if model is available
+    try:
+        from .ml_model import load_model, predict_batch
+        model_data, meta = load_model()
+        if model_data is not None:
+            df = predict_batch(df, model_data)
+    except Exception:
+        # ML model not available — that's fine
+        if "ml_proj" not in df.columns:
+            df["ml_proj"] = None
+            df["ml_lower"] = None
+            df["ml_upper"] = None
+
     return df
