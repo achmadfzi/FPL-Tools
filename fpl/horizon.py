@@ -49,12 +49,42 @@ def future_proj(row, gd, event_id):
     if row.get("status") in ("i", "u", "n") and chance < 0.5:
         return None
 
-    # --- Base quality signal (identical math to model.project_player) ---
-    form = float(row.get("form") or 0)
-    ppg = float(row.get("ppg") or 0)
-    xgi_per90 = float(row.get("xGI_per90") or 0)
+    # --- Early-season form confidence (mirrors model.py v3) ---
+    from .model import FORM_RAMP_GWS, POS_LEAGUE_AVG, XGI_PRIOR_STRENGTH, POS_CEILING
+
+    pos = row.get("pos", "MID")
+
+    current_gw = gd.next_event["id"] if gd and hasattr(gd, "next_event") else 38
+    starts = int(row.get("starts") or 0)
+    gws_elapsed = max(current_gw - 1, 0)
+    effective_gws = min(starts, gws_elapsed)
+    form_confidence = min(0.2 + 0.8 * (effective_gws / FORM_RAMP_GWS), 1.0)
+
+    pos_avg = POS_LEAGUE_AVG.get(pos, POS_LEAGUE_AVG["MID"])
+
+    # --- Base quality signal (identical math to model.project_player v3) ---
+    raw_form = float(row.get("form") or 0)
+    raw_ppg = float(row.get("ppg") or 0)
+    raw_xgi_per90 = float(row.get("xGI_per90") or 0)
+    raw_ict_per_game = float(row.get("ict_per_game") or 0)
+
+    # Damp form & ppg toward positional league average in early season
+    form = raw_form * form_confidence + pos_avg["form"] * (1 - form_confidence)
+    ppg = raw_ppg * form_confidence + pos_avg["ppg"] * (1 - form_confidence)
+
+    # Bayesian regression for xGI per 90
+    minutes = float(row.get("minutes") or 0)
+    sample_size_90s = max(minutes / 90.0, 0.0)
+    xgi_prior = pos_avg["xgi90"]
+    if sample_size_90s > 0:
+        xgi_per90 = (raw_xgi_per90 * sample_size_90s + xgi_prior * XGI_PRIOR_STRENGTH) / (sample_size_90s + XGI_PRIOR_STRENGTH)
+    else:
+        xgi_per90 = xgi_prior
+
+    # Damp ICT toward positional average
+    ict_per_game = raw_ict_per_game * form_confidence + pos_avg["ict"] * (1 - form_confidence)
+
     xgi_signal = min(xgi_per90 / XGI_PER90_BASELINE, 1.0) * max(form, ppg, 2.0) if XGI_PER90_BASELINE > 0 else 0.0
-    ict_per_game = float(row.get("ict_per_game") or 0)
     ict_signal = min(ict_per_game / ICT_BASELINE, 1.5) * max(form, ppg, 2.0) if ICT_BASELINE > 0 else 0.0
 
     form_w = w_get("form_w", 0.40)
@@ -64,8 +94,7 @@ def future_proj(row, gd, event_id):
     base = form_w * form + ppg_w * ppg + xgi_w * xgi_signal + ict_w * ict_signal
 
     # --- Normalised secondary signals ---
-    minutes = float(row.get("minutes") or 0)
-    starts = int(row.get("starts") or 0)
+    # Note: minutes, starts already set above for damping
     games_played = max(minutes / 90.0, 1.0) if minutes > 0 else 1.0
     threat_per_game = (float(row.get("threat") or 0)) / games_played
     threat_norm = min(threat_per_game / THREAT_NORM_FACTOR, 1.0)
@@ -76,7 +105,6 @@ def future_proj(row, gd, event_id):
     bonus_w = w_get("bonus_weight", 0.08)
     creativity_w = w_get("creativity_weight", 0.06)
     cs_w = w_get("cs_weight", 0.15)
-    pos = row.get("pos", "MID")
 
     # Minutes consistency (same as model.py)
     if starts == 0 or minutes == 0:
@@ -129,6 +157,11 @@ def future_proj(row, gd, event_id):
         return None
 
     total *= minutes_factor * chance
+
+    # --- Ceiling cap (consistent with model.py v3) ---
+    ceiling = POS_CEILING.get(pos, 14) * len(fixtures)
+    total = min(total, ceiling)
+
     return round(total, 2)
 
 

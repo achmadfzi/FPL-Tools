@@ -10,6 +10,27 @@ from .utils import (
     XGI_PER90_BASELINE,
 )
 
+# --- Early-season damping & regression constants ---
+
+# Minimum GWs before form/ppg/xGI signals are fully trusted
+FORM_RAMP_GWS = 5
+
+# League-average fallback values per position (used for regression to mean)
+# These are reasonable EPL averages per 90 for each position.
+POS_LEAGUE_AVG = {
+    "GK":  {"form": 3.5, "ppg": 3.5, "xgi90": 0.0,  "ict": 2.0},
+    "DEF": {"form": 3.5, "ppg": 3.5, "xgi90": 0.05, "ict": 3.0},
+    "MID": {"form": 3.0, "ppg": 3.0, "xgi90": 0.20, "ict": 4.0},
+    "FWD": {"form": 3.0, "ppg": 3.0, "xgi90": 0.30, "ict": 5.0},
+}
+
+# Bayesian prior sample size (pseudo-count in units of 90-minute games)
+# Higher = more conservative regression. 3.0 means ~3 full games of prior belief.
+XGI_PRIOR_STRENGTH = 3.0
+
+# Maximum realistic projection per position per single fixture
+POS_CEILING = {"GK": 8, "DEF": 12, "MID": 14, "FWD": 15}
+
 
 def _get_weights():
     """Get active model weights (tuned if available and enabled, else default)."""
@@ -66,15 +87,17 @@ def project_player(player, fixtures, gd, weights=None):
         gd: GameData instance (for cs_probability, teams_by_id)
         weights: optional dict of tuned weights (from adaptive module)
 
-    Enhanced formula v2 (weights are configurable via adaptive tuning):
-        base = form_w × form + ppg_w × ppg + xgi_w × xGI_signal + ict_w × ict_signal
-        cs_bonus = cs_prob × cs_points_for_pos × cs_weight
-        threat_bonus = threat_norm × threat_weight
-        bonus_tendency = bonus_per_game_norm × bonus_weight
-        creativity_bonus = creativity_norm × creativity_weight
-        base_adj = base + cs_bonus + threat_bonus + bonus_tendency + creativity_bonus
-        per_fixture = base_adj × FDR_mult × home_mult
-        final = (own_w × sum(per_fixture) + ep_w × ep_next + safety_w × ep_next_safety) × chance × minutes_factor
+    Enhanced formula v3 (with early-season damping & Bayesian regression):
+        1. Raw form/ppg/xGI/ICT signals extracted from player data
+        2. Signals damped toward positional league averages in early GWs
+           (form_confidence ramps from 0.2 to 1.0 over first 5 GWs)
+        3. xGI per 90 Bayesian-regressed to positional mean
+           (prevents 1-haul inflation)
+        4. base = form_w × form + ppg_w × ppg + xgi_w × xGI_signal + ict_w × ict_signal
+        5. cs_bonus, threat_bonus, bonus_tendency, creativity_bonus added
+        6. per_fixture = base_adj × FDR_mult × home_mult
+        7. final = blended projection × chance × minutes_factor
+        8. Hard ceiling cap per position applied
     """
     if not fixtures:
         return None
@@ -90,16 +113,52 @@ def project_player(player, fixtures, gd, weights=None):
     if player.get("status") in ("i", "u", "n") and chance < 0.5:
         return None
 
-    # --- Base quality signal (enhanced with ICT) ---
-    form = float(player.get("form") or 0)
-    ppg = float(player.get("ppg") or 0)
-    xgi_per90 = float(player.get("xGI_per90") or 0)
+    pos = player.get("pos", "MID")
+
+    # --- Early-season form confidence ---
+    # Determine how many GWs the player has actually played data for.
+    # Use 'starts' as proxy (each start ≈ 1 GW of real data).
+    # Also consider current GW number from GameData.
+    current_gw = gd.next_event["id"] if gd and hasattr(gd, "next_event") else 38
+    gws_played = max(int(player.get("starts") or 0), 0)
+    # Also cap by how many GWs have actually occurred
+    gws_elapsed = max(current_gw - 1, 0)
+
+    # Form confidence: ramps from 0.2 to 1.0 over FORM_RAMP_GWS
+    # Uses the minimum of player starts and GWs elapsed
+    effective_gws = min(gws_played, gws_elapsed)
+    form_confidence = min(0.2 + 0.8 * (effective_gws / FORM_RAMP_GWS), 1.0)
+
+    # Positional averages for damping
+    pos_avg = POS_LEAGUE_AVG.get(pos, POS_LEAGUE_AVG["MID"])
+
+    # --- Base quality signal (enhanced with ICT + early-season damping) ---
+    raw_form = float(player.get("form") or 0)
+    raw_ppg = float(player.get("ppg") or 0)
+    raw_xgi_per90 = float(player.get("xGI_per90") or 0)
+    raw_ict_per_game = float(player.get("ict_per_game") or 0)
+
+    # Damp form & ppg toward positional league average in early season
+    form = raw_form * form_confidence + pos_avg["form"] * (1 - form_confidence)
+    ppg = raw_ppg * form_confidence + pos_avg["ppg"] * (1 - form_confidence)
+
+    # Bayesian regression for xGI per 90: regress toward positional mean
+    # Uses pseudo-count approach: xgi_regressed = (observed * n + prior * k) / (n + k)
+    minutes = player.get("minutes") or 0
+    sample_size_90s = max(minutes / 90.0, 0.0)  # how many 90-min blocks
+    xgi_prior = pos_avg["xgi90"]
+    if sample_size_90s > 0:
+        xgi_per90 = (raw_xgi_per90 * sample_size_90s + xgi_prior * XGI_PRIOR_STRENGTH) / (sample_size_90s + XGI_PRIOR_STRENGTH)
+    else:
+        xgi_per90 = xgi_prior
+
+    # Damp ICT toward positional average
+    ict_per_game = raw_ict_per_game * form_confidence + pos_avg["ict"] * (1 - form_confidence)
 
     # Normalize xGI per 90 to a similar scale as form (0-10)
     xgi_signal = min(xgi_per90 / XGI_PER90_BASELINE, 1.0) * max(form, ppg, 2.0) if XGI_PER90_BASELINE > 0 else 0.0
 
     # ICT Index signal — combines influence, creativity, threat into one score
-    ict_per_game = float(player.get("ict_per_game") or 0)
     ict_signal = min(ict_per_game / ICT_BASELINE, 1.5) * max(form, ppg, 2.0) if ICT_BASELINE > 0 else 0.0
 
     # Use adaptive weights if provided
@@ -111,7 +170,6 @@ def project_player(player, fixtures, gd, weights=None):
     base = form_w * form + ppg_w * ppg + xgi_w * xgi_signal + ict_w * ict_signal
 
     ep_next = float(player.get("ep_next") or 0)
-    pos = player.get("pos", "MID")
 
     # --- Threat bonus (attacking signal, normalized) ---
     threat = float(player.get("threat") or 0)
@@ -193,6 +251,10 @@ def project_player(player, fixtures, gd, weights=None):
     else:
         # No form/ppg data (e.g. GW1) — lean heavily on ep_next
         final = ep_next * chance * minutes_factor * (1.0 if n_fixtures == 1 else 1.8)
+
+    # --- Ceiling cap: prevent unrealistically high projections ---
+    ceiling = POS_CEILING.get(pos, 14) * n_fixtures
+    final = min(final, ceiling)
 
     # Use first fixture for primary display metadata
     primary = fixture_metas[0]

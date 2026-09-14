@@ -2,57 +2,62 @@
   "team_id": 925693,
   "team_name": "Real Madas FC",
   "manager_name": "Achmad Fauzi",
-  "summary_overall_points": 139,
-  "summary_overall_rank": 3421950,
-  "summary_event_points": 76,
-  "bank": 1.0,
+  "summary_overall_points": 172,
+  "summary_overall_rank": 3905151,
+  "summary_event_points": 33,
+  "bank": 0.0,
   "team_value": 100.1,
-  "gw_synced": 2,
-  "active_chip": null,
+  "gw_synced": 3,
+  "active_chip": "wildcard",
   "chips_played": [
     {
       "name": "bboost",
       "time": "2026-08-21T13:45:42.852431Z",
       "event": 1
+    },
+    {
+      "name": "wildcard",
+      "time": "2026-09-04T05:34:34.036390Z",
+      "event": 3
     }
   ],
   "squad_ids": [
     1,
-    4,
-    387,
-    229,
-    105,
-    367,
+    8,
+    449,
+    115,
+    565,
     12,
-    236,
-    106,
+    368,
+    399,
+    411,
     165,
-    346,
-    384,
-    201,
-    584,
-    533
+    464,
+    109,
+    87,
+    481,
+    277
   ],
   "starters": [
     1,
-    4,
-    387,
-    229,
-    105,
-    367,
+    8,
+    449,
+    115,
+    565,
     12,
-    236,
-    106,
+    368,
+    399,
+    411,
     165,
-    346
+    464
   ],
   "bench": [
-    384,
-    201,
-    584,
-    533
+    109,
+    87,
+    481,
+    277
   ],
-  "captain_id": 165,
-  "vice_captain_id": 367,
-  "synced_at": 1788319744.5692253
+  "captain_id": 411,
+  "vice_captain_id": 399,
+  "synced_at": 1788693661.526478
 }

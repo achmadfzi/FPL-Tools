@@ -65,9 +65,11 @@ def ordered_bench(bench):
     FPL auto-sub rules:
     - Bench position 1 (first sub) is used first if a starter doesn't play
     - GK must be in bench position 4 (only used if starting GK doesn't play)
-    - Outfield bench players are ordered by projected points (highest first)
+    - Outfield bench players are ordered by a composite score that considers
+      both projected points AND nailed-on status (minutes confidence)
 
-    This ensures the highest-projected bench player gets subbed in first.
+    This ensures the best *reliable* bench player gets subbed in first,
+    rather than a high-projection player who might not actually play.
     """
     if not bench:
         return bench
@@ -75,10 +77,40 @@ def ordered_bench(bench):
     bench_gk = [p for p in bench if p["pos"] == "GK"]
     bench_outfield = [p for p in bench if p["pos"] != "GK"]
 
-    # Sort outfield by projection descending (best first = first to be auto-subbed)
-    bench_outfield.sort(key=lambda p: p.get("proj", 0), reverse=True)
+    # Composite bench priority score: projection × minutes confidence
+    # A nailed-on player (90 mins/start) with proj 4.0 > rotation risk with proj 5.0
+    def _bench_score(p):
+        proj = p.get("proj", 0) or 0
+        starts = p.get("starts", 0) or 0
+        minutes = p.get("minutes", 0) or 0
 
-    # FPL rule: GK goes to position 4 (last), outfield ordered by projection
+        if starts > 0 and minutes > 0:
+            mps = minutes / max(starts, 1)
+            # Nailed-on bonus: 1.0 for 90 mins/start, down to 0.7 for heavy rotation
+            nailed_factor = min(mps / 90.0, 1.0) * 0.3 + 0.7
+        else:
+            # Unknown — slight penalty (new player or no data)
+            nailed_factor = 0.8
+
+        # Also boost players with high chance of playing
+        chance = p.get("chance")
+        if chance is not None:
+            try:
+                chance_val = float(chance)
+                if chance_val <= 1.0:
+                    chance_val *= 100.0
+                chance_factor = max(chance_val / 100.0, 0.0)
+            except (TypeError, ValueError):
+                chance_factor = 1.0
+        else:
+            chance_factor = 1.0
+
+        return proj * nailed_factor * chance_factor
+
+    # Sort outfield by composite score descending (best first = first to be auto-subbed)
+    bench_outfield.sort(key=_bench_score, reverse=True)
+
+    # FPL rule: GK goes to position 4 (last), outfield ordered by score
     return bench_outfield + bench_gk
 
 
