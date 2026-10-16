@@ -57,6 +57,12 @@ FDR_MULT = {1: 1.12, 2: 1.06, 3: 1.0, 4: 0.92, 5: 0.85}
 # Clean sheet points per position (FPL rules)
 CS_POINTS = {"GK": 4, "DEF": 4, "MID": 1, "FWD": 0}
 
+# Defensive contribution (DefCon) rules — active since 2025/26:
+# DEF: 10+ CBIT -> 2 pts; MID/FWD: 12+ CBIRT -> 2 pts; GK not eligible.
+DC_POINTS = 2
+DC_THRESHOLD = {"DEF": 10, "MID": 12, "FWD": 12}
+DC_ELIGIBLE = ("DEF", "MID", "FWD")
+
 # Threat score normalization — typical top threat is ~1200 over a season (~32 per GW)
 THREAT_NORM_FACTOR = 40.0
 
@@ -71,6 +77,16 @@ CREATIVITY_NORM_FACTOR = 50.0
 
 # Bonus points per game baseline — top bonus earners ~1.5-2.0/game
 BONUS_BASELINE = 1.5
+
+# GK saves per game baseline — top GKs ~3-5 saves/game, 3 saves = 1 FPL point
+SAVES_NORM_FACTOR = 4.0
+
+# Goals conceded penalty rate — DEF/GK lose 1 pt per 2 goals conceded
+# This is the expected penalty as a fraction of expected goals conceded
+GC_PENALTY_RATE = 0.5  # 1 pt per 2 goals = 0.5 pts per goal conceded
+
+# Position-specific CS weight — GK/DEF benefit most from CS (4 pts each)
+CS_WEIGHT_BY_POS = {"GK": 0.25, "DEF": 0.25, "MID": 0.10, "FWD": 0.0}
 
 POSITION_COLORS = {"GK": "yellow", "DEF": "blue", "MID": "green", "FWD": "red"}
 

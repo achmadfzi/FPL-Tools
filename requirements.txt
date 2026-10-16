@@ -4,3 +4,5 @@ requests>=2.31
 pandas>=2.0,<2.3
 plotly>=5.20
 scikit-learn>=1.4
+scipy>=1.11
+pulp>=2.8

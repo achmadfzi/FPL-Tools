@@ -4,8 +4,12 @@ from .utils import (
     BONUS_BASELINE,
     CREATIVITY_NORM_FACTOR,
     CS_POINTS,
+    CS_WEIGHT_BY_POS,
+    DC_POINTS,
     FDR_MULT,
+    GC_PENALTY_RATE,
     ICT_BASELINE,
+    SAVES_NORM_FACTOR,
     THREAT_NORM_FACTOR,
     XGI_PER90_BASELINE,
 )
@@ -29,7 +33,9 @@ POS_LEAGUE_AVG = {
 XGI_PRIOR_STRENGTH = 3.0
 
 # Maximum realistic projection per position per single fixture
-POS_CEILING = {"GK": 8, "DEF": 12, "MID": 14, "FWD": 15}
+# GK: CS(4)+saves(3)+pen_save(5)+bonus(3)+app(2)=17 -> cap 12
+# DEF: CS(4)+goal(6)+bonus(3)+app(2)=15 -> cap 14
+POS_CEILING = {"GK": 12, "DEF": 14, "MID": 14, "FWD": 15}
 
 
 def _get_weights():
@@ -78,7 +84,7 @@ def _minutes_consistency_factor(player):
         return 0.65  # Heavy rotation / impact sub
 
 
-def project_player(player, fixtures, gd, weights=None):
+def project_player(player, fixtures, gd, weights=None, dc=None, exp_minutes=None):
     """Project a player's points for the next GW.
 
     Args:
@@ -86,6 +92,9 @@ def project_player(player, fixtures, gd, weights=None):
         fixtures: list of fixture dicts (supports DGW with multiple fixtures)
         gd: GameData instance (for cs_probability, teams_by_id)
         weights: optional dict of tuned weights (from adaptive module)
+        dc: optional DefCon parameter dict (from defcon.load) — adds the
+            expected defensive-contribution points for the match
+        exp_minutes: optional expected minutes (from player_history cache)
 
     Enhanced formula v3 (with early-season damping & Bayesian regression):
         1. Raw form/ppg/xGI/ICT signals extracted from player data
@@ -94,7 +103,7 @@ def project_player(player, fixtures, gd, weights=None):
         3. xGI per 90 Bayesian-regressed to positional mean
            (prevents 1-haul inflation)
         4. base = form_w × form + ppg_w × ppg + xgi_w × xGI_signal + ict_w × ict_signal
-        5. cs_bonus, threat_bonus, bonus_tendency, creativity_bonus added
+        5. cs_bonus, threat_bonus, bonus_tendency, creativity_bonus, dc_bonus added
         6. per_fixture = base_adj × FDR_mult × home_mult
         7. final = blended projection × chance × minutes_factor
         8. Hard ceiling cap per position applied
@@ -114,6 +123,22 @@ def project_player(player, fixtures, gd, weights=None):
         return None
 
     pos = player.get("pos", "MID")
+
+    # --- DefCon (defensive contribution) probability for this match ---
+    # Expected minutes: explicit history estimate > season minutes proxy.
+    dc_prob = 0.0
+    if dc is not None and pos != "GK":
+        params = dc.get(str(int(player.get("id", -1))))
+        if params:
+            from .defcon import hit_probability
+
+            if exp_minutes and float(exp_minutes) > 0:
+                m = float(exp_minutes)
+            else:
+                starts_p = int(player.get("starts") or 0)
+                minutes_p = float(player.get("minutes") or 0)
+                m = min(90.0, minutes_p / max(starts_p, 1)) if starts_p > 0 else (30.0 if minutes_p > 0 else 0.0)
+            dc_prob = hit_probability(params.get("pos", pos), params.get("a", 0.0), params.get("b", 1.0), m)
 
     # --- Early-season form confidence ---
     # Determine how many GWs the player has actually played data for.
@@ -158,6 +183,15 @@ def project_player(player, fixtures, gd, weights=None):
     # Normalize xGI per 90 to a similar scale as form (0-10)
     xgi_signal = min(xgi_per90 / XGI_PER90_BASELINE, 1.0) * max(form, ppg, 2.0) if XGI_PER90_BASELINE > 0 else 0.0
 
+    # GK saves signal — replaces xGI for goalkeepers (xGI is always ~0 for GK)
+    saves_per_game = float(player.get("saves_per_game") or 0)
+    if pos == "GK" and saves_per_game > 0:
+        # Saves contribute: 3 saves = 1 FPL point. A busy GK (4+ saves/game)
+        # gets ~1.3 extra pts/game from saves alone. Scale to form-like range.
+        saves_signal = min(saves_per_game / SAVES_NORM_FACTOR, 1.5) * max(form, ppg, 2.0)
+        # For GK, use saves_signal instead of xgi_signal
+        xgi_signal = saves_signal
+
     # ICT Index signal — combines influence, creativity, threat into one score
     ict_signal = min(ict_per_game / ICT_BASELINE, 1.5) * max(form, ppg, 2.0) if ICT_BASELINE > 0 else 0.0
 
@@ -195,6 +229,10 @@ def project_player(player, fixtures, gd, weights=None):
     # --- Minutes consistency multiplier ---
     minutes_factor = _minutes_consistency_factor(player)
 
+    # --- DefCon expected points (per fixture; DGW counts twice) ---
+    dc_w = weights.get("dc_weight", 0.90) if weights else 0.90
+    dc_bonus = dc_prob * DC_POINTS * dc_w
+
     # --- Per-fixture projection (handles DGW) ---
     fixture_projs = []
     fixture_metas = []
@@ -211,13 +249,23 @@ def project_player(player, fixtures, gd, weights=None):
         dyn_mult = gd.fixture_dyn_mult(team_id, opponent, is_home) if team_id else 1.0
         fixture_mult = fdr_mult * dyn_mult
 
-        # Clean sheet probability bonus
+        # Clean sheet probability bonus — position-specific weight
         cs_prob = gd.cs_probability(team_id, opponent, is_home, fdr=fdr)
         cs_pts = CS_POINTS.get(pos, 0)
-        cs_w = weights.get("cs_weight", 0.15) if weights else 0.15
+        cs_w_default = CS_WEIGHT_BY_POS.get(pos, 0.15)
+        cs_w = weights.get("cs_weight_" + pos.lower(), weights.get("cs_weight", cs_w_default)) if weights else cs_w_default
         cs_bonus = cs_prob * cs_pts * cs_w
 
-        base_adj = base + cs_bonus + threat_bonus + bonus_tendency + creativity_bonus
+        # Goals conceded penalty for DEF/GK — expected points lost from
+        # conceding goals (DEF/GK lose 1 pt per 2 goals conceded)
+        gc_penalty = 0.0
+        if pos in ("GK", "DEF"):
+            # Use (1 - cs_prob) as proxy for "likely to concede"
+            # Expected goals conceded ~ league avg lambda × opponent attack strength
+            exp_gc = gd.expected_goals_conceded(team_id, opponent, is_home)
+            gc_penalty = exp_gc * GC_PENALTY_RATE * 0.15  # scaled down so it doesn't dominate
+
+        base_adj = base + cs_bonus + threat_bonus + bonus_tendency + creativity_bonus + dc_bonus - gc_penalty
 
         fx_proj = base_adj * fixture_mult * home_mult
         fixture_projs.append(fx_proj)
@@ -272,6 +320,8 @@ def project_player(player, fixtures, gd, weights=None):
         "ict_signal": round(ict_signal, 2),
         "bonus_norm": round(bonus_norm, 3),
         "creativity_norm": round(creativity_norm, 3),
+        "dc_prob": round(dc_prob, 3),
+        "dc_bonus": round(dc_bonus, 3),
         "minutes_factor": round(minutes_factor, 2),
         # Keep raw chance semantics (None/percent 0-100) — consumers convert.
         "chance": player.get("chance"),
@@ -295,10 +345,27 @@ def build_projection_table(gd, use_tuned_weights=True):
     """
     weights = _get_weights() if use_tuned_weights else None
 
+    # DefCon parameters + expected minutes (file-cache only — no network calls)
+    dc = None
+    emap = {}
+    try:
+        from .defcon import load as _load_defcon
+
+        dc = _load_defcon(gd)
+    except Exception:
+        dc = None
+    try:
+        from .player_history import exp_minutes_map
+
+        emap = exp_minutes_map([int(p["id"]) for p in gd.players])
+    except Exception:
+        emap = {}
+
     records = []
     for p in gd.players:
         fixtures = gd.fixture_list_for_team(p["team"])
-        meta = project_player(p, fixtures, gd, weights=weights)
+        meta = project_player(p, fixtures, gd, weights=weights, dc=dc,
+                              exp_minutes=emap.get(int(p["id"])))
         rec = dict(p)
         if meta:
             rec.update(
@@ -316,6 +383,8 @@ def build_projection_table(gd, use_tuned_weights=True):
                     "ict_signal": meta["ict_signal"],
                     "bonus_norm": meta["bonus_norm"],
                     "creativity_norm": meta["creativity_norm"],
+                    "dc_prob": meta["dc_prob"],
+                    "dc_bonus": meta["dc_bonus"],
                     "minutes_factor": meta["minutes_factor"],
                     "chance": meta["chance"],
                     "is_home": meta["is_home"],
@@ -341,6 +410,8 @@ def build_projection_table(gd, use_tuned_weights=True):
                     "ict_signal": 0.0,
                     "bonus_norm": 0.0,
                     "creativity_norm": 0.0,
+                    "dc_prob": 0.0,
+                    "dc_bonus": 0.0,
                     "minutes_factor": 0.0,
                     "chance": p["chance"],
                     "is_home": None,
@@ -377,5 +448,23 @@ def build_projection_table(gd, use_tuned_weights=True):
         for col in ("hist_rows", "exp_minutes", "rec_form", "rec_xgi90"):
             if col not in df.columns:
                 df[col] = None if col != "hist_rows" else 0
+
+    # DefCon detail columns (dc_prob/dc_bonus already set per player above)
+    try:
+        from .defcon import attach as _dc_attach
+
+        if dc is not None:
+            df = _dc_attach(df, dc)
+    except Exception:
+        pass
+
+    # Calibrated served projections (no-op unless calibration is enabled and
+    # validated). Adds proj_pre_cal/proj_cal and replaces `proj` when active.
+    try:
+        from .calibration import apply as _cal_apply
+
+        df = _cal_apply(df)
+    except Exception:
+        pass
 
     return df

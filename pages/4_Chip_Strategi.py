@@ -33,15 +33,20 @@ st.caption(
     "Kapan waktu terbaik menggunakan Triple Captain (TC), Bench Boost (BB), "
     "Wildcard (WC), dan Free Hit (FH) — berbasis jadwal DGW, BGW, dan proyeksi poin."
 )
+st.info(
+    "💡 Estimasi **EV chip untuk GW ini** (TC/BB/FH/WC berbasis Monte Carlo + perbandingan skuad nyata) "
+    "ada di halaman **🎯 Rencana Aksi**. Halaman ini fokus pada perencanaan jangka panjang & kalender DGW/BGW."
+)
 
 with st.expander("Aturan chip yang perlu diketahui"):
     st.markdown(
         """
-        - **Triple Captain (TC)**: poin kapten dikali 3 (bukan 2). Bisa dipakai 1x per musim.
-        - **Bench Boost (BB)**: poin 4 pemain cadangan ikut dihitung. Bisa dipakai 1x per musim.
-        - **Wildcard (WC)**: rebuild seluruh skuad 15 pemain tanpa penalti transfer. Bisa dipakai 2x per musim (1x per paruh).
-        - **Free Hit (FH)**: rebuild tim untuk 1 GW saja, lalu kembali ke skuad semula. Bisa dipakai 1x per musim.
-        - TC dan BB **tidak bisa** dipakai bersamaan di Gameweek yang sama.
+        - **2026/27: 2 set chip** — satu untuk setiap paruh musim (8 chip total). Set pertama hangus di deadline GW19.
+        - **Triple Captain (TC)**: poin kapten dikali 3 (bukan 2). 1x per paruh musim.
+        - **Bench Boost (BB)**: poin 4 pemain cadangan ikut dihitung. 1x per paruh musim.
+        - **Wildcard (WC)**: rebuild seluruh skuad 15 pemain tanpa penalti transfer. 1x per paruh musim.
+        - **Free Hit (FH)**: rebuild tim untuk 1 GW saja, lalu kembali ke skuad semula. 1x per paruh musim.
+        - Hanya **1 chip per Gameweek** (TC/BB/WC/FH tidak bisa digabung).
         - **Double Gameweek (DGW)**: tim bermain 2 laga dalam 1 GW — kunci utama strategi TC & BB.
         - **Blank GW (BGW)**: tim tidak bertanding — kunci utama strategi FH.
         """

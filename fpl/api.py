@@ -190,6 +190,28 @@ class GameData:
         # Home teams keep clean sheets ~5% more often
         return max(0.05, min(0.55, base + (0.05 if is_home else 0.0)))
 
+    def expected_goals_conceded(self, team_id, opponent_id, is_home):
+        """Estimate expected goals conceded by team_id vs opponent_id.
+
+        Uses dynamic team indices when available (opponent attack strength ×
+        team's defensive weakness × league average lambda), falls back to a
+        FDR-based estimate.
+
+        Returns a float (expected goals conceded in one match).
+        """
+        if self.team_indices:
+            meta = self.team_indices.get("_meta", {})
+            t = self.team_indices.get(team_id, {})
+            o = self.team_indices.get(opponent_id, {})
+            if t and o and meta:
+                # Lambda = league avg × opponent's attack × team's GC rate
+                L = meta.get("L_away" if is_home else "L_home", 1.3)
+                att_opp = float(o.get("att") or 1.0) if float(o.get("att") or 0) > 0 else 1.0
+                gc_team = float(t.get("gc") or 1.0) if float(t.get("gc") or 0) > 0 else 1.0
+                return max(0.0, L * att_opp * gc_team)
+        # Fallback: FDR-based estimate (higher FDR = stronger opponent = more goals)
+        return 1.3  # league average ~1.3 goals per game
+
     def _build_players(self):
         players = []
         for p in self.bootstrap["elements"]:
@@ -218,6 +240,22 @@ class GameData:
 
             # Minutes consistency: avg minutes per start (90 = always full, <70 = rotation risk)
             minutes_per_start = round(minutes / max(starts, 1), 1) if starts > 0 else 0.0
+
+            # GK/DEF specific: saves, goals conceded, clean sheets
+            saves = int(p.get("saves") or 0)
+            goals_conceded = int(p.get("goals_conceded") or 0)
+            clean_sheets = int(p.get("clean_sheets") or 0)
+            penalties_saved = int(p.get("penalties_saved") or 0)
+            saves_per_game = round(saves / games_est, 2) if games_est > 0 else 0.0
+            gc_per_game = round(goals_conceded / games_est, 2) if games_est > 0 else 0.0
+
+            # --- DefCon (defensive contribution) & set pieces (2026/27) ---
+            dc_total = int(p.get("defensive_contribution") or 0)
+            dc_per90 = float(p.get("defensive_contribution_per_90") or 0)
+            pen_order = p.get("penalties_order")
+            corners_order = p.get("corners_and_indirect_freekicks_order")
+            fk_order = p.get("direct_freekicks_order")
+            penalties_missed = int(p.get("penalties_missed") or 0)
 
             players.append(
                 {
@@ -256,6 +294,26 @@ class GameData:
                     "creativity_per_game": creativity_per_game,
                     "ict_per_game": ict_per_game,
                     "minutes_per_start": minutes_per_start,
+                    # GK/DEF specific fields
+                    "saves": saves,
+                    "saves_per_game": saves_per_game,
+                    "goals_conceded": goals_conceded,
+                    "gc_per_game": gc_per_game,
+                    "clean_sheets": clean_sheets,
+                    "penalties_saved": penalties_saved,
+                    "penalties_missed": penalties_missed,
+                    # DefCon & set-piece fields (2026/27)
+                    "dc_total": dc_total,
+                    "dc_per90": dc_per90,
+                    "pen_order": int(pen_order) if pen_order is not None else None,
+                    "corners_order": int(corners_order) if corners_order is not None else None,
+                    "fk_order": int(fk_order) if fk_order is not None else None,
+                    # xG/xA per 90 (separate scoring/assist signals)
+                    "xG_per90": round(float(p.get("expected_goals_per_90") or 0), 3),
+                    "xA_per90": round(float(p.get("expected_assists_per_90") or 0), 3),
+                    "yellow_cards": int(p.get("yellow_cards") or 0),
+                    "red_cards": int(p.get("red_cards") or 0),
+                    "starts_per_90": round(float(p.get("starts_per_90") or 0), 3),
                 }
             )
         return players

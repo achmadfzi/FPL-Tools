@@ -242,12 +242,16 @@ def fixture_line(p):
 def projection_explanation(p):
     n_fx = int(p.get("n_fixtures") or 1)
     dgw = " (DGW — 2 laga!)" if n_fx >= 2 else ""
+    pos = p.get("pos", "MID")
     lines = [
         f"Base signal (0.40×form {p.get('form', 0):.2f} + 0.20×ppg {p.get('ppg', 0):.2f} + 0.25×xGI {p.get('xgi_signal', 0):.2f} + 0.15×ICT {p.get('ict_signal', 0):.2f}) = {p.get('own', 0):.2f}",
-        f"CS probability = {p.get('cs_prob', 0):.1%} (bonus tergantung posisi)",
+        f"GK saves signal (replaces xGI) = {p.get('saves_per_game', 0):.1f} saves/game" if pos == "GK" else None,
+        f"CS probability = {p.get('cs_prob', 0):.1%} (bonus weight: {'0.25 GK/DEF' if pos in ('GK', 'DEF') else '0.10 MID'})" if pos != "FWD" else f"CS probability = {p.get('cs_prob', 0):.1%} (no CS bonus for FWD)",
+        f"Goals conceded penalty (DEF/GK) = faktor risiko kebobolan" if pos in ("GK", "DEF") else None,
         f"Threat score (normalized) = {p.get('threat_norm', 0):.3f}",
         f"Bonus tendency (normalized) = {p.get('bonus_norm', 0):.3f}",
         f"Creativity score (normalized) = {p.get('creativity_norm', 0):.3f}",
+        f"Peluang DefCon = {p.get('dc_prob', 0):.1%} → bonus {p.get('dc_bonus', 0):.2f} poin/laga" if (p.get('dc_prob') or 0) > 0 else None,
         f"Minutes consistency = ×{p.get('minutes_factor', 1.0):.2f}",
         f"Faktor lawan (FDR {p.get('fdr', '-')}) = ×{p.get('fixture_mult', 1.0):.3f}",
         f"Koreksi kekuatan tim dinamis = ×{p.get('dyn_mult', 1.0):.3f}" if p.get("dyn_mult") is not None else None,

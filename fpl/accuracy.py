@@ -33,22 +33,73 @@ def save_projections(gw_id, df):
 
     Call this when loading data on Beranda (before deadline).
     Only saves once per GW to avoid overwriting with stale post-deadline data.
+
+    Stores the *raw* projection ("proj") for model training plus the
+    calibrated value served to the user ("proj_served") and the full feature
+    snapshot (form, ppg, signals, DefCon, CS probability, minutes factor,
+    fixture multipliers, ...) so the adaptive/calibration layers can be
+    re-fitted properly later.
     """
     data = _load()
     key = f"gw_{gw_id}"
     if key in data and "projections" in data[key]:
         # Already saved for this GW — don't overwrite
         return False
+
+    feature_cols = [
+        ("own", "own"),
+        ("own_total", "own_total"),
+        ("ep_next_fpl", "ep_next"),
+        ("fixture_mult", "fixture_mult"),
+        ("dyn_mult", "dyn_mult"),
+        ("home_mult", "home_mult"),
+        ("cs_prob", "cs_prob"),
+        ("threat_norm", "threat"),
+        ("xgi_signal", "xgi_sig"),
+        ("ict_signal", "ict_sig"),
+        ("bonus_norm", "bonus"),
+        ("creativity_norm", "creativity"),
+        ("dc_prob", "dc_prob"),
+        ("dc_bonus", "dc_bonus"),
+        ("minutes_factor", "minutes_factor"),
+        ("form", "form"),
+        ("ppg", "ppg"),
+        ("xG_per90", "xg90"),
+        ("xA_per90", "xa90"),
+        ("selected_by", "selected_by"),
+        ("minutes", "minutes"),
+        ("price", "price"),
+    ]
+
+    def _num(v):
+        try:
+            f = float(v)
+            if math.isnan(f):
+                return None
+            return round(f, 4)
+        except (TypeError, ValueError):
+            return None
+
     projections = {}
     for _, row in df.iterrows():
         if row["proj"] is not None and not (isinstance(row["proj"], float) and math.isnan(row["proj"])):
-            projections[str(int(row["id"]))] = {
-                "proj": round(float(row["proj"]), 2),
+            raw = row.get("proj_pre_cal")
+            raw = float(raw) if raw is not None and not (isinstance(raw, float) and math.isnan(raw)) else float(row["proj"])
+            entry = {
+                "proj": round(raw, 2),
                 "pos": row["pos"],
                 "fdr": int(row["fdr"]) if row.get("fdr") is not None else None,
                 "web_name": row["web_name"],
                 "team_short": row["team_short"],
+                "is_home": bool(row.get("is_home")) if row.get("is_home") is not None else None,
+                "n_fixtures": int(row.get("n_fixtures") or 1),
             }
+            if "proj_pre_cal" in df.columns:
+                entry["proj_served"] = _num(row["proj"])
+            for src, dst in feature_cols:
+                if src in df.columns:
+                    entry[dst] = _num(row.get(src))
+            projections[str(int(row["id"]))] = entry
     data[key] = {
         "saved_at": time.time(),
         "projections": projections,
@@ -143,7 +194,9 @@ def compute_accuracy(gw_id):
     for pid, proj_info in projections.items():
         if pid not in actuals:
             continue
-        proj_val = proj_info["proj"]
+        # Metrics measure the served (calibrated when active) estimate.
+        proj_val = proj_info.get("proj_served", proj_info.get("proj"))
+        raw_val = proj_info.get("proj")
         actual_val = actuals[pid]
         error = actual_val - proj_val
         abs_error = abs(error)
@@ -154,6 +207,7 @@ def compute_accuracy(gw_id):
 
         errors.append({"pid": pid, "name": proj_info.get("web_name", pid),
                         "pos": pos, "fdr": fdr, "proj": proj_val,
+                        "proj_raw": raw_val,
                         "actual": actual_val, "error": error})
 
         by_pos.setdefault(pos, []).append(abs_error)

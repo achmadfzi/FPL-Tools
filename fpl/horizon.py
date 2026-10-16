@@ -5,7 +5,11 @@ from .utils import (
     BONUS_BASELINE,
     CREATIVITY_NORM_FACTOR,
     CS_POINTS,
+    CS_WEIGHT_BY_POS,
+    DC_POINTS,
+    GC_PENALTY_RATE,
     ICT_BASELINE,
+    SAVES_NORM_FACTOR,
     THREAT_NORM_FACTOR,
     XGI_PER90_BASELINE,
 )
@@ -21,13 +25,18 @@ def _weights():
         return None
 
 
-def future_proj(row, gd, event_id):
+def future_proj(row, gd, event_id, steps_ahead=1):
     """Project a player's points for a future GW using current quality signals.
 
     Uses the SAME formula as the main projection model (model.project_player)
     so 3-GW plans stay consistent with the current-GW numbers: base signal
-    from form/ppg/xGI/ICT, plus threat/bonus/creativity, CS bonus per fixture,
-    dynamic fixture multipliers (teamform), minutes consistency & playing chance.
+    from form/ppg/xGI/ICT, plus threat/bonus/creativity, DefCon bonus, CS
+    bonus per fixture, dynamic fixture multipliers (teamform), minutes
+    consistency & playing chance.
+
+    `steps_ahead` (1 = the next GW after the current one, 2 = two GWs out,
+    ...) applies mean reversion: hot/cold form regresses toward the player's
+    season PPG, because "form" is far more fixture-driven than quality.
     """
     team = int(row["team"])
     counts = gd.team_fixture_counts(event_id)
@@ -72,6 +81,12 @@ def future_proj(row, gd, event_id):
     form = raw_form * form_confidence + pos_avg["form"] * (1 - form_confidence)
     ppg = raw_ppg * form_confidence + pos_avg["ppg"] * (1 - form_confidence)
 
+    # Mean reversion for future GWs: the *gap* between recent form and the
+    # season PPG (a more stable quality anchor) decays with distance.
+    if steps_ahead and steps_ahead > 1:
+        decay = 0.75 ** (steps_ahead - 1)
+        form = ppg + (form - ppg) * decay
+
     # Bayesian regression for xGI per 90
     minutes = float(row.get("minutes") or 0)
     sample_size_90s = max(minutes / 90.0, 0.0)
@@ -85,6 +100,13 @@ def future_proj(row, gd, event_id):
     ict_per_game = raw_ict_per_game * form_confidence + pos_avg["ict"] * (1 - form_confidence)
 
     xgi_signal = min(xgi_per90 / XGI_PER90_BASELINE, 1.0) * max(form, ppg, 2.0) if XGI_PER90_BASELINE > 0 else 0.0
+
+    # GK saves signal — replaces xGI for goalkeepers (consistent with model.py)
+    saves_per_game = float(row.get("saves_per_game") or 0)
+    if pos == "GK" and saves_per_game > 0:
+        saves_signal = min(saves_per_game / SAVES_NORM_FACTOR, 1.5) * max(form, ppg, 2.0)
+        xgi_signal = saves_signal
+
     ict_signal = min(ict_per_game / ICT_BASELINE, 1.5) * max(form, ppg, 2.0) if ICT_BASELINE > 0 else 0.0
 
     form_w = w_get("form_w", 0.40)
@@ -130,10 +152,29 @@ def future_proj(row, gd, event_id):
 
         cs_prob = gd.cs_probability(team, opponent, is_home, fdr=fdr)
         cs_pts = CS_POINTS.get(pos, 0)
+        cs_w_default = CS_WEIGHT_BY_POS.get(pos, 0.15)
+        cs_w = w_get("cs_weight_" + pos.lower(), w_get("cs_weight", cs_w_default))
         cs_bonus = cs_prob * cs_pts * cs_w
 
+        # Goals conceded penalty for DEF/GK (consistent with model.py)
+        gc_penalty = 0.0
+        if pos in ("GK", "DEF"):
+            exp_gc = gd.expected_goals_conceded(team, opponent, is_home)
+            gc_penalty = exp_gc * GC_PENALTY_RATE * 0.15
+
+        # DefCon expected points (per fixture, consistent with model.py)
+        dc_prob = 0.0
+        if pos != "GK":
+            try:
+                dc_prob = float(row.get("dc_prob") or 0)
+            except (TypeError, ValueError):
+                dc_prob = 0.0
+        dc_w = w_get("dc_weight", 0.90)
+        dc_bonus = dc_prob * DC_POINTS * dc_w
+
         base_adj = (base + cs_bonus + threat_norm * threat_w
-                    + bonus_norm * bonus_w + creativity_norm * creativity_w)
+                    + bonus_norm * bonus_w + creativity_norm * creativity_w
+                    + dc_bonus - gc_penalty)
 
         # FDR multiplier (possibly tuned) × dynamic rolling-strength correction
         try:
@@ -173,7 +214,7 @@ def horizon_df(gd, df, horizon=3):
         if i == 0:
             out[f"p{i}"] = out["proj"]
         else:
-            out[f"p{i}"] = [future_proj(r, gd, gw) for _, r in df.iterrows()]
+            out[f"p{i}"] = [future_proj(r, gd, gw, steps_ahead=i) for _, r in df.iterrows()]
     out["horizon"] = out[[f"p{i}" for i in range(horizon)]].sum(axis=1)
     return out
 

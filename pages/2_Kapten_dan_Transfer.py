@@ -114,7 +114,7 @@ ticker_html += '</tr>'
 
 for row in ticker_rows:
     ticker_html += '<tr style="border-bottom:1px solid #f1f5f9">'
-    ticker_html += f'<td style="padding:6px 10px;font-weight:500;color:#0f172a">{esc(row["team_short"])}</td>'
+    ticker_html += f'<td style="padding:6px 10px;font-weight:500;color:#0f172a" title="{esc(row.get("team_name", row["team_short"]))}">{esc(row["team_short"])}</td>'
     for i in range(6):
         gw = cur_gw + i
         cell = row.get(f"gw_{gw}", {"text": "-", "fdr": None})
@@ -130,7 +130,7 @@ for row in ticker_rows:
 
 ticker_html += '</table></div>'
 st.markdown(ticker_html, unsafe_allow_html=True)
-st.caption("⚡ = Double Gameweek. Tim di atas memiliki jadwal lawan paling ringan.")
+st.caption("⚡ = Double Gameweek. Klub diurutkan berdasarkan abjad (A–Z). Kolom Avg menunjukkan rata-rata FDR (makin hijau/rendah = jadwal makin ringan).")
 
 st.markdown('<div class="section">Value <em>Picks</em> — Poin Proyeksi per £1 Juta</div>', unsafe_allow_html=True)
 st.caption("Pemain murah dengan efisiensi proyeksi poin tertinggi terhadap budget.")

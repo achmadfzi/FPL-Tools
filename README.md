@@ -4,6 +4,7 @@ Tools bantu bermain Fantasy Premier League (FPL) berbasis data publik resmi FPL 
 
 ## Fitur
 
+- **🎯 Rencana Aksi (halaman baru)** - semua keputusan GW ini dalam satu layar: XI EV-optimal (aturan auto-sub persis), kapten & wakil EV, urutan bench, rencana transfer multi-GW (FT & hit), estimasi EV chip (TC/BB/FH/WC), dan peringatan status pemain
 - **Beranda** - Info Gameweek & deadline, rekomendasi kapten (+ **EV Monte Carlo**), tabel FDR (tingkat kesulitan lawan), top-10 proyeksi poin, ringkasan akurasi model
 - **Player Explorer** - Jelajahi 600+ pemain, filter posisi/tim/harga/status, detail proyeksi + tren form 8 GW terakhir, kolom xGI/90 dan CS probability
 - **Kapten & Transfer** - Kandidat kapten terbaik (**+ simulasi Monte Carlo kapten/wakil berbasis EV & risiko blank**), value picks (poin per £1juta), fixture ticker (FDR 6 GW ke depan), differential picks, pemain berisiko cedera
@@ -12,7 +13,8 @@ Tools bantu bermain Fantasy Premier League (FPL) berbasis data publik resmi FPL 
 - **Akurasi Model** - Evaluasi akurasi proyeksi vs skor aktual: MAE, RMSE, breakdown per posisi & FDR, saran penyesuaian bobot
 - **Rencana 3 GW (Team Builder)** - Proyeksi & XI terbaik untuk 3 Gameweek ke depan; XI boleh dirotasi gratis, transfer diminimalkan
 - **`python recommend.py`** - Optimasi otomatis skuad terbaik dalam budget (£100m) untuk GW berjalan (`--gws 3` untuk optimasi 3 GW sekaligus)
-- **`python validate.py`** - Validasi menyeluruh: optimalitas solver vs brute-force, benchmark vs strategi pandit & 300 tim acak, sensitivitas proyeksi
+- **`python validate.py`** - Validasi menyeluruh: optimalitas solver vs brute-force, benchmark vs strategi pandit & 300 tim acak, sensitivitas proyeksi, legalitas rencana transfer planner, status kalibrasi
+- **`python tests/test_core.py`** - Test inti: aturan auto-sub, batas probabilitas DefCon, harga jual, XI value vs brute-force, kalibrasi
 
 ## Cara Menjalankan
 
@@ -46,8 +48,21 @@ final = (0.50 × sum(per_fixture) + 0.35 × ep_next + 0.15 × ep_next_safety) ×
 - **Kandang** ×1.08, **tandang** ×0.93
 - **DGW**: Jika tim main 2 laga, proyeksi dijumlah per fixture (bukan ×1.9 flat)
 - **Peluang bermain**: dari `chance_of_playing_next_round` (pemain cedera/suspended otomatis dikeluarkan)
+- **DefCon (perpindahan terbaru)**: ekspektasi poin kontribusi defensif ditambahkan per laga (lihat bagian DefCon di bawah)
 - **ep_next**: proyeksi poin resmi dari FPL itu sendiri
 - Pemain yang timnya tidak bertanding (bye) tidak diproyeksikan
+
+## Poin Kontribusi Defensif (DefCon) — Fitur 2026/27
+
+Aturan resmi: **DEF 10+ CBIT** atau **MID/FWD 12+ CBIRT** dalam satu laga = **+2 poin** (maks 2 per laga; GK tidak eligible). Ini fitur tetap sejak 2025/26 dan sangat besar pengaruhnya (mis. Tarkowski ≈ 11 aksi/90 → ±60% peluang tiap laga).
+
+- `fpl/defcon.py` memodelkan peluang kena threshold dengan **Gamma-Poisson (negative binomial)**:
+  - memakai jumlah aksi per laga dari riwayat `element-summary` (`player_history`, cache 6 jam);
+  - fallback ke rate musiman `defensive_contribution_per_90` dengan *shrinkage* ke rata-rata posisi (anti-noise sampel kecil);
+  - dikalikan ekspektasi menit main → `p_hit` per laga.
+- Terintegrasi di **model proyeksi** (`dc_bonus = 2 × p_hit`), **horizon 3-GW**, dan **simulator Monte Carlo** (event DefCon disimulasikan per laga).
+- Tampil sebagai kolom **DC%** di Player Explorer dan di alasan proyeksi.
+- Jalankan **backfill riwayat pemain** (tombol di halaman Rencana Aksi) agar estimasi berbasis aksi per laga; tanpa itu, fallback musiman tetap dipakai.
 
 ## Kekuatan Tim Dinamis (bukan Hanya FDR Statis)
 
@@ -64,24 +79,30 @@ nyata** (`fpl/teamform.py`):
   ke clean-sheet rate aktual liga — menggantikan rasio linier lama.
 - Degradasi aman: tanpa data cukup, semua kembali ke perilaku FDR lama.
 
-## Simulasi Monte Carlo — Kapten, Wakil & EV (Bukan Sekadar Proyeksi)
+## Simulasi Monte Carlo — Kapten, Wakil, XI & EV (Bukan Sekadar Proyeksi)
 
-`fpl/simulator.py` mensimulasikan ribuan skenario Gameweek berikutnya:
+`fpl/simulator.py` (v2) mensimulasikan ribuan skenario Gameweek berikutnya:
 
-- Gol per laga ~ Poisson(λ) dari kekuatan tim dinamis; gol & assist dialokasikan
-  ke pemain via share xG (seluruh roster tim), assist dari rekan setim (tanpa
-  self-assist); menit main & peluang tidak bermain dari expected-minutes per
-  pemain (`fpl/player_history.py` — cache per-GW element-summary, TTL 6 jam);
-  clean sheet, bonus (draw berbobot atas kedua tim) ikut disimulasikan.
+- Gol per laga ~ Poisson(λ) dari kekuatan tim dinamis; **pencetak gol dialokasikan
+  via share xG/90** (bukan xGI gabungan), **assist via share xA/90** (tanpa
+  self-assist); **penalti** mengikuti `penalties_order` (konversi 78%, penalti
+  gagal bisa jadi *save* — GK +5); **kartu kuning/merah** (probabilitas per
+  posisi) dan **DefCon** ikut disimulasikan; menit main dari expected-minutes
+  per pemain (`player_history`) dengan fallback musiman; clean sheet, saves &
+  bonus (draw berbobot, ikut sinyal DefCon) disimulasikan.
 - **Kapten & Wakil**: EV kapten = 2× poin bila kapten main; bila blank → 2× poin
-  wakil (VC) yang otomatis menggantikannya. VC terbaik sering BUKAN pemain
-  proyeksi tertinggi ke-2 — tetapi pemain yang hampir pasti main dengan EV tinggi.
-- Output: EV per kandidat, peluang main/blank, rentang p10–p90, EV XI.
-- Ditampilkan di **Beranda** (ringkas) & **Kapten & Transfer** (detail), memakai
-  skuad tersimpan Anda (Tim FPL terhubung → squad.json → recommended_squad.json;
-  fallback XI referensi).
-- Rencana 3 GW (`horizon.py`) kini konsisten dengan model utama: bobot aktif
-  (adaptive tuning) + multiplier dinamis + komponen sinyal yang sama.
+  wakil (VC) yang otomatis menggantikannya.
+- **XI & urutan bench EV-optimal dengan aturan auto-sub resmi**: setelah satu
+  simulasi skuad, semua kombinasi formasi dievaluasi *setelah* auto-sub
+  (GK↔GK, urutan bench 1-3, formasi tetap valid) — XI dipilih dari **EV**, bukan
+  jumlah proyeksi (biasanya +1..4 poin/GW).
+- Output: EV per kandidat kapten, peluang main/blank, rentang p10–p90, EV XI,
+  EV tiap pemain bench.
+- Ditampilkan di **Beranda** (ringkas), **Kapten & Transfer** (detail), dan
+  **Rencana Aksi** (XI + bench + kapten final), memakai skuad tersimpan Anda.
+- Rencana 3 GW (`horizon.py`) konsisten dengan model utama: bobot aktif
+  (adaptive tuning) + multiplier dinamis + komponen sinyal yang sama +
+  **mean-reversion form** per jarak GW (form panas/dingin mengarah balik ke PPG).
 
 ## Faktor Reliabilitas (Menit Bermain + Kepercayaan Komunitas)
 
@@ -137,6 +158,57 @@ Catatan: statistik musim lalu hanyalah acuan — kombinasi dengan proyeksi GW in
 - **`python recommend.py --gws 3`**: mengoptimasi skuad untuk TOTAL proyeksi 3 GW sekaligus, lengkap dengan rencana XI & kapten per GW.
 - **Team Builder** menampilkan rencana 3 GW untuk skuad Anda: total poin per GW, formasi, kapten, dan pemain berisiko (proyeksi GW2+GW3 rendah = kandidat transfer).
 - Prinsip: rotasi XI antar GW **gratis** (tidak memakai transfer); transfer hanya dibutuhkan jika pemain keluar dari 15 skuad.
+
+## Rencana Aksi — Halaman Keputusan Gameweek
+
+Halaman **🎯 Rencana Aksi** (paling atas di sidebar) merangkum semua keputusan GW berikutnya:
+
+1. **XI EV-optimal** dengan aturan auto-sub + formasi terbaik + **kapten & wakil berbasis EV** (termasuk risiko blank dan rentang p10–p90).
+2. **Urutan bench** final (GK cadangan slot 4) beserta EV per pemain bench.
+3. **Rencana transfer multi-GW** dengan FT, hit, harga jual, bank nyata dari tim tersinkron.
+4. **Estimasi EV chip** (TC/BB/FH/WC) untuk GW ini + status chip 2 set (set-1 hangus di GW19).
+5. **Peringatan** status cedera/diragukan dan bench berproyeksi tinggi.
+
+Tombol **backfill riwayat pemain** juga ada di halaman ini (sekali jalan, ±200 pemain, cache 6 jam).
+
+## Perencanaan Transfer (FT, Hit & Harga Jual)
+
+`fpl/planner.py` menggantikan heuristik lama dengan keputusan legal & optimal:
+
+- **State nyata tim Anda**: free transfer dihitung dari riwayat transfer musim ini
+  (1/GW, rollover maks 5; GW chip tidak menambah FT — sesuai aturan resmi dan
+  terverifikasi dari riwayat Anda), bank, serta **harga jual** tiap pemain
+  (`beli + ½ profit`, dibulatkan ke bawah — dari endpoint transfers).
+- **Beam search 4 GW**: kombinasi 0–2 transfer per GW dengan keputusan hit
+  (−4/transfer ekstra), patuh limit **3 pemain/klub**, struktur **2/5/5/3**,
+  dan budget nyata; output = rencana per GW + gain vs "tahan tanpa transfer".
+- **Wildcard/skuad awal via MILP** (`scipy`): optimasi exact 15 pemain di bawah
+  semua batasan FPL — dipakai untuk estimasi EV Wildcard & Free Hit.
+- `fpl/transfer.py` (fallback lama) kini **sell-price aware** dan mengecek limit klub.
+
+## Chip Berbasis EV (2 Set per Musim)
+
+`fpl/chips_ev.py` menghitung nilai chip memakai simulator & planner:
+
+- **TC** = EV poin ekstra dari 3× kapten alih-alih 2× (termasuk asuransi wakil).
+- **BB** = EV total 15 pemain − EV XI auto-sub (persis poin tambahan dari bench).
+- **FH** = XI terbaik pasar (MILP, budget harga jual + bank) − XI skuad sekarang.
+- **WC** = total horizon skuad optimal − skuad sekarang (harga jual + bank).
+- Aturan 2026/27: **2 set chip** (1 per paruh musim), **1 chip per GW**,
+  set pertama hangus di deadline GW19.
+
+## Kalibrasi Proyeksi & Anti-Overfit
+
+`fpl/calibration.py` memeriksa apakah proyeksi model bias secara sistematis:
+
+- Fit per posisi `aktual ≈ a + b × proyeksi` dengan shrinkage ke identitas
+  (sampel kecil tidak bisa mendistorsi) — memakai **proyeksi mentah** sebagai
+  input agar tidak ada umpan balik.
+- Validasi **leave-one-Gameweek-out**: kalibrasi hanya AKTIF bila MAE
+  out-of-sample membaik ≥ 0.5%. Selama belum terbukti, proyeksi mentah yang dipakai.
+- Snapshot fitur lengkap (form, ppg, sinyal, DefCon, CS, menit, multiplier)
+  disimpan di `data/accuracy.json` untuk tuning/analisis lanjutan.
+- Status & tombol "Fit Kalibrasi" ada di halaman **Akurasi Model**.
 
 ## Sumber Data
 

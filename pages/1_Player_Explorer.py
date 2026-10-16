@@ -103,15 +103,19 @@ has_ml = "ml_proj" in view.columns and view["ml_proj"].notna().any()
 cols = ["web_name", "team_short", "pos", "price", "proj"]
 if has_ml:
     cols.append("ml_proj")
-cols += ["xGI_per90", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance", "status"]
+cols += ["xGI_per90", "dc_prob", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance", "status"]
 
-show = view[cols].copy()
-show["price"] = show["price"] / 10
 col_names = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi"]
 if has_ml:
     col_names.append("ML Proj")
-col_names += ["xGI/90", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang", "Status"]
-show.columns = col_names
+col_names += ["xGI/90", "DC%", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang", "Status"]
+
+# Keep only columns actually available in the projection table (defensive:
+# DefCon columns are attached best-effort).
+pairs = [(c, l) for c, l in zip(cols, col_names) if c in view.columns]
+show = view[[c for c, _ in pairs]].copy()
+show.columns = [l for _, l in pairs]
+show["Harga"] = show["Harga"] / 10
 
 
 def style_pos(v):
@@ -161,12 +165,21 @@ def fmt_chance(v):
         return "-"
 
 
-style_subsets = ["Pemain", "Tim", "xGI/90", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "Peluang"]
+def fmt_dc(v):
+    try:
+        f = float(v)
+        return f"{int(round(f * 100))}%"
+    except (ValueError, TypeError):
+        return "-"
+
+
+style_subsets = ["Pemain", "Tim", "xGI/90", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "Peluang", "DC%"]
 proj_subsets = ["Proyeksi"]
 format_dict = {
     "Harga": "£{:.1f}m",
     "Proyeksi": "{:.2f}",
     "xGI/90": "{:.2f}",
+    "DC%": fmt_dc,
     "Poin Lalu": "{:.0f}",
     "PPG Lalu": "{:.2f}",
     "Form": "{:.2f}",

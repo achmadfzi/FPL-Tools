@@ -22,11 +22,15 @@ DEFAULT_WEIGHTS = {
     "own_w": 0.65,
     "ep_w": 0.25,
     "safety_w": 0.10,
-    "fdr_mult": {1: 1.12, 2: 1.06, 3: 1.0, 4: 0.92, 5: 0.85},
+    "fdr_mult": {1: 1.10, 2: 1.05, 3: 1.0, 4: 0.92, 5: 0.85},
     "cs_weight": 0.15,
+    "cs_weight_gk": 0.25,
+    "cs_weight_def": 0.25,
+    "cs_weight_mid": 0.10,
     "threat_weight": 0.08,
     "bonus_weight": 0.08,
     "creativity_weight": 0.06,
+    "dc_weight": 0.90,
 }
 
 

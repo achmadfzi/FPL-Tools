@@ -191,6 +191,60 @@ else:
                     st.write(f"  FDR {fdr}: MAE {mae:.2f}")
 
 # =============================================================================
+# CALIBRATION SECTION
+# =============================================================================
+st.markdown('<div class="section">🎯 Kalibrasi <em>Proyeksi</em> — Koreksi Bias Sistematis</div>', unsafe_allow_html=True)
+st.caption(
+    "Mencocokkan proyeksi model dengan poin aktual per posisi (actual ≈ a + b × proyeksi) dan hanya "
+    "mengaktifkan koreksi bila lolos uji *leave-one-Gameweek-out* (MAE membaik ≥ 0.5%). "
+    "Kalibrasi memakai proyeksi mentah sebagai input, sehingga tidak terjadi umpan balik."
+)
+
+try:
+    from fpl import calibration as _calib
+
+    cal_status = _calib.status()
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        if st.button("🎯 Fit Kalibrasi", use_container_width=True):
+            with st.spinner("Mem-fit kalibrasi & validasi..."):
+                res = _calib.fit()
+            if res.get("status") == "insufficient_data":
+                st.warning(res.get("message", "Data belum cukup."))
+            elif res.get("enabled"):
+                st.success(f"Kalibrasi AKTIF — MAE CV membaik {res['metrics']['improvement_pct']:+.2f}%.")
+            else:
+                imp = (res.get("metrics") or {}).get("improvement_pct")
+                st.info(
+                    "Kalibrasi belum menguntungkan secara out-of-sample"
+                    + (f" ({imp:+.2f}% MAE)." if imp is not None else ".")
+                    + " Model tetap memakai proyeksi mentah — coba lagi setelah lebih banyak GW."
+                )
+            st.rerun()
+
+    if cal_status.get("available"):
+        m = cal_status
+        with c2:
+            st.metric("Status", "AKTIF" if m["enabled"] else "nonaktif")
+        with c3:
+            if m.get("raw_mae_cv") is not None:
+                st.metric("MAE CV (mentah → terkalibrasi)",
+                          f"{m['raw_mae_cv']:.2f} → {m['calibrated_mae_cv']:.2f}",
+                          delta=f"{m['improvement_pct']:+.2f}%")
+            else:
+                st.metric("Sampel", f"{m.get('n', 0)} proyeksi")
+        if m.get("by_pos"):
+            with st.expander("Koefisien per posisi (a = intersep, b = kemiringan)"):
+                for pos, prm in sorted(m["by_pos"].items()):
+                    st.write(f"  **{pos}**: actual ≈ {prm['a']:+.3f} + {prm['b']:.3f} × proyeksi  (n={prm['n']})")
+        if not m["enabled"]:
+            st.caption("Koreksi hanya diterapkan saat terbukti membaik di data yang belum dilihat (anti-overfit).")
+    else:
+        st.caption("Belum ada hasil kalibrasi tersimpan — klik **Fit Kalibrasi**.")
+except Exception as exc:
+    st.caption(f"Modul kalibrasi tidak tersedia: {exc}")
+
+# =============================================================================
 # ADAPTIVE WEIGHTS SECTION
 # =============================================================================
 st.markdown('<div class="section">🔧 Adaptive <em>Weights</em> — Optimasi Bobot Model</div>', unsafe_allow_html=True)

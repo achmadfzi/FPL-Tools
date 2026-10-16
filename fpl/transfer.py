@@ -22,28 +22,42 @@ def multi_gw_value(player, gw_projs, horizon=3):
     return round(sum(projs[:horizon]), 2)
 
 
-def multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3) -> list[dict]:
+def multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3, sell_prices=None, club_max=3) -> list[dict]:
     """Suggest transfers based on total gain over multiple GWs.
 
     Unlike the old suggest_transfers (1 GW only), this considers the total
     projected points over `horizon` GWs for both the current player and replacement.
 
+    Budget is sell-price aware: each replacement must fit inside
+    ``sell_price(current) + bank`` when `sell_prices` is given. The 3-players-
+    per-club rule is enforced on the resulting squad.
+
     Returns: sorted list of transfer candidates with multi-GW gain.
     """
+    from collections import Counter
+
     squad_ids = {p["id"] for p in squad}
+    club_counts = Counter(int(p["team"]) for p in squad)
     by_pos = {pos: [p for p in pool if p["pos"] == pos and p.get("proj", 0) and p["proj"] > 0]
               for pos in ("GK", "DEF", "MID", "FWD")}
+    sell_prices = sell_prices or {}
 
     candidates = []
     for p in squad:
         p_total = multi_gw_value(p, gw_projs, horizon)
-        budget = p["price"] + bank
+        out_sell = sell_prices.get(p["id"], p["price"])
+        budget = out_sell + bank
 
         reps = []
         for q in by_pos.get(p["pos"], []):
             if q["id"] in squad_ids:
                 continue
             if q["price"] > budget:
+                continue
+            # Club rule: replacing p with q must not create a 4th player from q's club
+            q_club = int(q["team"])
+            new_count = club_counts.get(q_club, 0) + (1 if q_club == int(p["team"]) else 0)
+            if new_count > club_max:
                 continue
             q_total = multi_gw_value(q, gw_projs, horizon)
             if q_total > p_total:
@@ -62,6 +76,7 @@ def multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3) -> list[dict]:
                 "reps": top3,
                 "gain": top3[0]["gain_total"],
                 "gain_1gw": round(top3[0].get("proj", 0) - p.get("proj", 0), 2),
+                "sell_price": out_sell,
             })
 
     candidates.sort(key=lambda c: c["gain"], reverse=True)
@@ -111,7 +126,11 @@ def fixture_ticker_table(gd, n_gws=6):
     rows = []
     for team_id in sorted(gd.teams_by_id.keys()):
         team = gd.teams_by_id[team_id]
-        row = {"team_id": team_id, "team_short": team["short_name"]}
+        row = {
+            "team_id": team_id,
+            "team_short": team["short_name"],
+            "team_name": team.get("name", team["short_name"]),
+        }
         team_fixtures = ticker.get(team_id, [])
         # Calculate average FDR for sorting (lower = easier run)
         fdrs = [f["fdr"] for f in team_fixtures]
@@ -145,7 +164,7 @@ def fixture_ticker_table(gd, n_gws=6):
                 }
         rows.append(row)
 
-    rows.sort(key=lambda r: r["avg_fdr"])
+    rows.sort(key=lambda r: r["team_short"])
     return rows, cur
 
 
