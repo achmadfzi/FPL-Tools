@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from fpl.api import DATA_DIR
+from fpl.availability import availability
 from fpl.horizon import player_gw_projections
 from fpl.optimizer import best_xi, suggest_transfers
 from fpl.ui import (
@@ -17,6 +18,7 @@ from fpl.ui import (
     player_img_html,
     pos_badge_html,
     stat_header_html,
+    transfer_card_html,
 )
 from fpl.utils import fmt_price
 
@@ -69,12 +71,54 @@ def save_squad(ids):
     SQUAD_FILE.write_text(json.dumps(ids))
 
 
+def reset_dnd_budget():
+    """Forget the drag-and-drop budget when the squad source changes."""
+    st.session_state.pop("dnd_budget_tenths", None)
+    st.session_state.pop("dnd_budget_team_id", None)
+
+
 def labels_for(pos, ids):
     return [
         fmt_option(by_id[i])
         for i in ids
         if i in by_id and by_id[i]["pos"] == pos and fmt_option(by_id[i]) in pos_options[pos]
     ]
+
+
+def selected_ids_from_widgets():
+    """Current selection from the multiselect/component-backed keys.
+
+    This is the source of truth when switching between Daftar and Drag & Drop;
+    ``st.session_state["squad"]`` is only the persisted/saved snapshot.
+    """
+    ids = []
+    for pos in SQUAD_SIZE:
+        chosen = st.session_state.get(f"sel_{pos}", [])
+        ids += [pos_options[pos][opt] for opt in chosen if opt in pos_options[pos]]
+    return ids
+
+
+def lineup_gw_cells(player, gw_projs):
+    """Three compact fixture/projection cells for the pitch card."""
+    cells = []
+    cur = int(gd.next_event["id"])
+    projs = gw_projs.get(int(player["id"]), [0.0, 0.0, 0.0])
+    for offset, val in enumerate(projs[:3]):
+        gw_id = cur + offset
+        fixture = gd.fixture_for_team_event(player.get("team"), gw_id)
+        if fixture:
+            opponent = gd.teams_by_id.get(fixture["opponent"], {}).get("short_name", "?")
+            home_away = "K" if fixture["is_home"] else "T"
+            fdr = fixture.get("difficulty", 3)
+        else:
+            opponent, home_away, fdr = "-", "", 3
+        cells.append({
+            "opp": opponent,
+            "ha": home_away,
+            "fdr": int(fdr or 3),
+            "pts": round(float(val or 0), 2),
+        })
+    return cells
 
 
 from fpl.team import load_manager, sync_team
@@ -144,6 +188,7 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state.get("squ
                     st.session_state["squad"] = loaded
                     for pos in SQUAD_SIZE:
                         st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
+                    reset_dnd_budget()
                     st.toast(f"Skuad FPL ({mgr.get('team_name')}) dimuat!", icon="🔄")
                     st.rerun()
         with c2:
@@ -153,6 +198,7 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state.get("squ
                     st.session_state["squad"] = loaded
                     for pos in SQUAD_SIZE:
                         st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
+                    reset_dnd_budget()
                     st.toast("Tim tersimpan dimuat!", icon="📁")
                     st.rerun()
                 else:
@@ -164,6 +210,7 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state.get("squ
                     st.session_state["squad"] = rec
                     for pos in SQUAD_SIZE:
                         st.session_state[f"sel_{pos}"] = labels_for(pos, rec)
+                    reset_dnd_budget()
                     st.toast("Skuad rekomendasi AI dimuat!", icon="💡")
                     st.rerun()
                 else:
@@ -173,6 +220,7 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state.get("squ
                 st.session_state["squad"] = []
                 for pos in SQUAD_SIZE:
                     st.session_state[f"sel_{pos}"] = []
+                reset_dnd_budget()
                 st.rerun()
     else:
         st.info("Masukkan FPL Team ID Anda di bawah untuk auto-sync skuad.")
@@ -186,6 +234,7 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state.get("squ
                     st.session_state["squad"] = loaded
                     for pos in SQUAD_SIZE:
                         st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
+                    reset_dnd_budget()
                     st.rerun()
                 else:
                     st.error(err)
@@ -196,24 +245,137 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state.get("squ
                     st.session_state["squad"] = loaded
                     for pos in SQUAD_SIZE:
                         st.session_state[f"sel_{pos}"] = labels_for(pos, loaded)
+                    reset_dnd_budget()
                     st.rerun()
 
+    from fpl.squad_builder import (
+        compact_player,
+        group_player_ids,
+        normalize_selected,
+        selected_ids,
+        validate_selection,
+    )
+
+    builder_mode = st.radio(
+        "Cara menyusun skuad",
+        ["🧲 Drag & Drop", "📋 Daftar"],
+        horizontal=True,
+        key="squad_builder_mode",
+        help="Drag & Drop memakai komponen JavaScript; mode Daftar tetap memakai multiselect lama.",
+    )
+    dnd_mode = builder_mode.startswith("🧲")
+    dnd_budget_tenths = None
     sel_new = []
-    cols = st.columns(4)
-    for col, (pos, need) in zip(cols, SQUAD_SIZE.items()):
-        with col:
-            chosen = st.multiselect(
-                f"Pilih {need} pemain {pos}",
-                list(pos_options[pos].keys()),
-                key=f"sel_{pos}",
-                placeholder=f"Maks {need} pemain",
+
+    if dnd_mode:
+        current_ids = selected_ids_from_widgets()
+        current_selected = group_player_ids(current_ids, by_id)
+        initial_cost = sum(int(by_id[i].get("price") or 0) for i in current_ids)
+        stored_budget = st.session_state.get("dnd_budget_tenths")
+        stored_team = st.session_state.get("dnd_budget_team_id")
+
+        if mgr and set(current_ids) == set(mgr.get("squad_ids", [])):
+            # A synced FPL squad may cost more than £100m at today's prices.
+            # Keep the real bank rather than blocking the user's own team.
+            dnd_budget_tenths = max(
+                1000,
+                initial_cost + int(round(float(mgr.get("bank") or 0) * 10)),
             )
-            ids = [pos_options[pos][opt] for opt in chosen if opt in pos_options[pos]]
-            sel_new += ids
-            st.caption(f"{len(ids)}/{need} dipilih")
+            st.session_state["dnd_budget_tenths"] = dnd_budget_tenths
+            st.session_state["dnd_budget_team_id"] = mgr.get("team_id")
+        elif stored_budget is not None and mgr and stored_team == mgr.get("team_id"):
+            # Keep the synced team's budget after edits; recomputing from the
+            # edited squad would incorrectly reset it to £100m mid-session.
+            dnd_budget_tenths = int(stored_budget)
+        else:
+            # For saved/new squads, allow at least the current value to avoid
+            # blocking a squad whose prices have risen above £100m.
+            dnd_budget_tenths = max(1000, initial_cost)
+
+        if "dnd_version" not in st.session_state:
+            st.session_state["dnd_version"] = 0
+
+        try:
+            from fpl.components.squad_builder import squad_builder
+
+            component_value = squad_builder(
+                players=[compact_player(p) for p in players],
+                selected=current_selected,
+                budget=dnd_budget_tenths,
+                club_max=3,
+                version=int(st.session_state.get("dnd_version", 0)),
+                key="squad_builder_dnd",
+            )
+        except Exception as exc:  # component missing/unbuilt -> keep the app usable
+            st.warning(f"Komponen drag & drop tidak tersedia: {exc}. Memakai mode Daftar.")
+            dnd_mode = False
+            component_value = None
+
+        if dnd_mode and component_value is not None:
+            parsed = normalize_selected(component_value)
+            signature = tuple(selected_ids(parsed))
+            revision = component_value.get("_revision") if isinstance(component_value, dict) else None
+            if revision is not None:
+                should_process = revision != st.session_state.get("_dnd_revision")
+            else:
+                # Backward-compatible fallback for an older cached frontend.
+                should_process = signature != st.session_state.get("_dnd_signature")
+
+            if should_process:
+                if revision is not None:
+                    st.session_state["_dnd_revision"] = revision
+                st.session_state["_dnd_signature"] = signature
+                errors = validate_selection(
+                    parsed,
+                    by_id,
+                    budget=dnd_budget_tenths,
+                    club_max=3,
+                )
+                if errors:
+                    st.session_state["dnd_error"] = errors
+                    st.session_state["dnd_version"] = int(st.session_state.get("dnd_version", 0)) + 1
+                    st.rerun()
+                else:
+                    st.session_state["dnd_error"] = None
+                    flat = selected_ids(parsed)
+                    st.session_state["squad"] = flat
+                    for pos in SQUAD_SIZE:
+                        st.session_state[f"sel_{pos}"] = labels_for(pos, flat)
+                    sel_new = flat
+                    # Re-render the component with the freshly validated
+                    # selection. The revision guard prevents a loop.
+                    st.rerun()
+
+        if dnd_mode:
+            if st.session_state.get("dnd_error"):
+                st.error("Drop ditolak: " + "; ".join(st.session_state["dnd_error"]))
+            st.caption(
+                "Tarik pemain dari kandidat ke posisi yang sesuai, atau klik tombol **+** / **×**. "
+                "Aturan 2 GK / 5 DEF / 5 MID / 3 FWD, maksimal 3 pemain per klub, dan budget otomatis dicek."
+            )
+            if not sel_new:
+                sel_new = selected_ids_from_widgets()
+
+    if not dnd_mode:
+        st.session_state.pop("dnd_error", None)
+        cols = st.columns(4)
+        for col, (pos, need) in zip(cols, SQUAD_SIZE.items()):
+            with col:
+                chosen = st.multiselect(
+                    f"Pilih {need} pemain {pos}",
+                    list(pos_options[pos].keys()),
+                    key=f"sel_{pos}",
+                    placeholder=f"Maks {need} pemain",
+                )
+                ids = [pos_options[pos][opt] for opt in chosen if opt in pos_options[pos]]
+                sel_new += ids
+                st.caption(f"{len(ids)}/{need} dipilih")
 
     total_cost = sum(by_id[i]["price"] for i in sel_new) / 10
-    bank = 100.0 - total_cost
+    if dnd_mode and dnd_budget_tenths is not None:
+        bank = max(0.0, (dnd_budget_tenths - int(round(total_cost * 10))) / 10)
+    else:
+        bank = 100.0 - total_cost
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total skuad", f"{len(sel_new)}/15")
@@ -227,9 +389,10 @@ with st.expander("Pilih Skuad 15 Pemain", expanded=len(st.session_state.get("squ
             st.success("✅ Skuad 15 pemain berhasil disimpan secara permanen!")
             st.rerun()
 
-# If not in expander, use session state
-if "sel_new" not in dir() or not sel_new:
-    sel_new = [i for i in st.session_state.get("squad", []) if i in by_id]
+# If the expander content did not define a selection, fall back to the
+# widget-backed selection (not the saved squad, which may be stale).
+if "sel_new" not in dir():
+    sel_new = selected_ids_from_widgets()
     total_cost = sum(by_id[i]["price"] for i in sel_new) / 10
     if mgr and set(sel_new) == set(mgr.get("squad_ids", [])):
         bank = float(mgr.get("bank", 0.0))
@@ -250,6 +413,9 @@ if len(sel_new) == 15:
             "is_home": p.get("is_home"),
             "fdr": p.get("fdr"),
             "chance": p.get("chance"),
+            "chance_this": p.get("chance_this"),
+            "chance_next": p.get("chance_next", p.get("chance")),
+            "news": p.get("news", ""),
             "status": p.get("status"),
             "photo_code": p.get("photo_code"),
             "selected_by": p.get("selected_by"),
@@ -282,10 +448,41 @@ if len(sel_new) == 15:
         p["proj_raw"] = p["proj"]
         p["proj"] = round(p["proj"] * p["rel_factor"], 2)
 
-    result = best_xi(squad)
+    auto_result = best_xi(squad)
 
-    if result:
-        # Compute 3 GW projections
+    if auto_result:
+        from fpl.lineup import (
+            build_lineup_result,
+            compact_lineup_player,
+            default_lineup,
+            normalize_component_value,
+            validate_lineup,
+        )
+
+        squad_by_id = {int(p["id"]): p for p in squad}
+        lineup_signature = tuple(sorted(squad_by_id))
+        if st.session_state.get("lineup_signature") != lineup_signature:
+            auto_xi, auto_bench_out, auto_bench_gk = default_lineup(auto_result)
+            st.session_state["lineup_signature"] = lineup_signature
+            st.session_state["lineup_xi"] = auto_xi
+            st.session_state["lineup_bench_out"] = auto_bench_out
+            st.session_state["lineup_bench_gk"] = auto_bench_gk
+            st.session_state["lineup_version"] = int(st.session_state.get("lineup_version", 0)) + 1
+            st.session_state.pop("lineup_error", None)
+
+        xi_ids = list(st.session_state.get("lineup_xi") or [])
+        bench_out_ids = list(st.session_state.get("lineup_bench_out") or [])
+        bench_gk_id = st.session_state.get("lineup_bench_gk")
+        lineup_errors = validate_lineup(xi_ids, bench_out_ids, bench_gk_id, squad_by_id)
+        if lineup_errors:
+            auto_xi, auto_bench_out, auto_bench_gk = default_lineup(auto_result)
+            xi_ids, bench_out_ids, bench_gk_id = auto_xi, auto_bench_out, auto_bench_gk
+            st.session_state["lineup_xi"] = xi_ids
+            st.session_state["lineup_bench_out"] = bench_out_ids
+            st.session_state["lineup_bench_gk"] = bench_gk_id
+            st.session_state["lineup_version"] = int(st.session_state.get("lineup_version", 0)) + 1
+
+        result = build_lineup_result(xi_ids, bench_out_ids, bench_gk_id, squad_by_id)
         gw_projs = player_gw_projections(df, gd, 3)
 
         total_proj = result["total"]
@@ -302,67 +499,133 @@ if len(sel_new) == 15:
         col_pitch, col_picker = st.columns([5.7, 4.3])
 
         with col_pitch:
-            # --- PITCH ---
-            pitch_html = '<div class="pitch-v2">'
-            for pos in ("GK", "DEF", "MID", "FWD"):
-                group = [p for p in result["xi"] if p["pos"] == pos]
-                group.sort(key=lambda p: p["proj"], reverse=True)
-                pitch_html += '<div class="p-row-v2">'
-                for p in group:
-                    is_cap = result["captain"] and p["id"] == result["captain"]["id"]
-                    is_vice = result["vice"] and p["id"] == result["vice"]["id"]
-                    pitch_html += pitch_card_html(
-                        p,
-                        gw_projs=gw_projs if show_3gw else None,
-                        gd=gd if show_3gw else None,
-                        is_captain=is_cap,
-                        is_vice=is_vice,
-                    )
-                pitch_html += '</div>'
-            pitch_html += '</div>'
-            st.markdown(pitch_html, unsafe_allow_html=True)
+            c_auto, _c_spacer = st.columns([1, 3])
+            with c_auto:
+                if st.button("🔄 Auto XI", use_container_width=True, key="auto_xi_btn"):
+                    auto_xi, auto_bench_out, auto_bench_gk = default_lineup(auto_result)
+                    st.session_state["lineup_xi"] = auto_xi
+                    st.session_state["lineup_bench_out"] = auto_bench_out
+                    st.session_state["lineup_bench_gk"] = auto_bench_gk
+                    st.session_state["lineup_version"] = int(st.session_state.get("lineup_version", 0)) + 1
+                    st.session_state.pop("lineup_error", None)
+                    st.rerun()
 
-            # --- BENCH ---
-            bench_html = '<div class="bench-v2">'
-            for p in result["bench"]:
-                img = player_img_html(p, cls="pc-img")
-                gw_cells = ""
-                if show_3gw:
-                    projs = gw_projs.get(p["id"], [0.0, 0.0, 0.0])
-                    cur = gd.next_event["id"]
-                    cells = []
-                    for i, val in enumerate(projs[:3]):
-                        gw_id = cur + i
-                        fx = gd.fixture_for_team_event(p.get("team"), gw_id) if p.get("team") else None
-                        if fx:
-                            opp_short = gd.teams_by_id.get(fx["opponent"], {}).get("short_name", "?")
-                            ha = "K" if fx["is_home"] else "T"
-                            fdr = fx.get("difficulty", 3)
-                        else:
-                            opp_short = "-"
-                            ha = ""
-                            fdr = 3
-                        from fpl.ui import FDR_CELL
-                        bg, fg = FDR_CELL.get(fdr, ("#e2e8f0", "#1e293b"))
-                        cells.append(
-                            f'<div class="gw-cell" style="background:{bg};color:{fg}">'
-                            f'<div class="gv">{val:.1f}</div>'
-                            f'<div class="gl">{opp_short}({ha})</div></div>'
-                        )
-                    gw_cells = f'<div class="gw-cells">{"".join(cells)}</div>'
+            lineup_component_ok = False
+            lineup_value = None
+            try:
+                from fpl.components.lineup_builder import lineup_builder
 
-                bench_html += (
-                    f'<div class="bc">'
-                    f'<div class="pos-label">{p["pos"]}</div>'
-                    f'{img}'
-                    f'<div class="pc-name">{esc(p["web_name"])}</div>'
-                    f'<div class="pc-team" style="font-size:.5rem">{esc(p.get("team_short", ""))}</div>'
-                    f'<div class="pc-price">{fmt_price(p["price"])}</div>'
-                    f'{gw_cells}'
-                    f'</div>'
+                lineup_payload = [
+                    compact_lineup_player(p, lineup_gw_cells(p, gw_projs))
+                    for p in squad
+                ]
+                lineup_value = lineup_builder(
+                    players=lineup_payload,
+                    xi=xi_ids,
+                    bench_out=bench_out_ids,
+                    bench_gk=bench_gk_id,
+                    version=int(st.session_state.get("lineup_version", 0)),
+                    key="lineup_builder",
                 )
-            bench_html += '</div>'
-            st.markdown(bench_html, unsafe_allow_html=True)
+                lineup_component_ok = True
+            except Exception as exc:
+                st.warning(f"Komponen pitch drag & drop tidak tersedia: {exc}. Memakai tampilan statis.")
+
+            if st.session_state.get("lineup_error"):
+                st.error("Lineup ditolak: " + "; ".join(st.session_state["lineup_error"]))
+
+            if lineup_component_ok and lineup_value is not None:
+                parsed = normalize_component_value(lineup_value)
+                if parsed is not None:
+                    errors = validate_lineup(
+                        parsed["xi"],
+                        parsed["bench_out"],
+                        parsed["bench_gk"],
+                        squad_by_id,
+                    )
+                    sig = (tuple(parsed["xi"]), tuple(parsed["bench_out"]), parsed["bench_gk"])
+                    revision = lineup_value.get("_revision") if isinstance(lineup_value, dict) else None
+                    if revision is not None:
+                        should_process = revision != st.session_state.get("_lineup_revision")
+                    else:
+                        should_process = sig != st.session_state.get("_lineup_sig")
+
+                    if should_process:
+                        if revision is not None:
+                            st.session_state["_lineup_revision"] = revision
+                        st.session_state["_lineup_sig"] = sig
+                        if errors:
+                            st.session_state["lineup_error"] = errors
+                            st.session_state["lineup_version"] = int(st.session_state.get("lineup_version", 0)) + 1
+                            st.rerun()
+                        else:
+                            st.session_state["lineup_error"] = None
+                            st.session_state["lineup_xi"] = parsed["xi"]
+                            st.session_state["lineup_bench_out"] = parsed["bench_out"]
+                            st.session_state["lineup_bench_gk"] = parsed["bench_gk"]
+                            st.rerun()
+
+            if not lineup_component_ok:
+                # Static fallback when the JS component cannot be loaded.
+                pitch_html = '<div class="pitch-v2">'
+                for pos in ("GK", "DEF", "MID", "FWD"):
+                    group = [p for p in result["xi"] if p["pos"] == pos]
+                    group.sort(key=lambda p: p["proj"], reverse=True)
+                    pitch_html += '<div class="p-row-v2">'
+                    for p in group:
+                        is_cap = result["captain"] and p["id"] == result["captain"]["id"]
+                        is_vice = result["vice"] and p["id"] == result["vice"]["id"]
+                        pitch_html += pitch_card_html(
+                            p,
+                            gw_projs=gw_projs if show_3gw else None,
+                            gd=gd if show_3gw else None,
+                            is_captain=is_cap,
+                            is_vice=is_vice,
+                        )
+                    pitch_html += '</div>'
+                pitch_html += '</div>'
+                st.markdown(pitch_html, unsafe_allow_html=True)
+
+                bench_html = '<div class="bench-v2">'
+                for p in result["bench"]:
+                    img = player_img_html(p, cls="pc-img")
+                    gw_cells = ""
+                    if show_3gw:
+                        projs = gw_projs.get(p["id"], [0.0, 0.0, 0.0])
+                        cur = gd.next_event["id"]
+                        cells = []
+                        for i, val in enumerate(projs[:3]):
+                            gw_id = cur + i
+                            fx = gd.fixture_for_team_event(p.get("team"), gw_id) if p.get("team") else None
+                            if fx:
+                                opp_short = gd.teams_by_id.get(fx["opponent"], {}).get("short_name", "?")
+                                ha = "K" if fx["is_home"] else "T"
+                                fdr = fx.get("difficulty", 3)
+                            else:
+                                opp_short = "-"
+                                ha = ""
+                                fdr = 3
+                            from fpl.ui import FDR_CELL
+                            bg, fg = FDR_CELL.get(fdr, ("#e2e8f0", "#1e293b"))
+                            cells.append(
+                                f'<div class="gw-cell" style="background:{bg};color:{fg}">'
+                                f'<div class="gv">{val:.1f}</div>'
+                                f'<div class="gl">{opp_short}({ha})</div></div>'
+                            )
+                        gw_cells = f'<div class="gw-cells">{"".join(cells)}</div>'
+
+                    bench_html += (
+                        f'<div class="bc">'
+                        f'<div class="pos-label">{p["pos"]}</div>'
+                        f'{img}'
+                        f'<div class="pc-name">{esc(p["web_name"])}</div>'
+                        f'<div class="pc-team" style="font-size:.5rem">{esc(p.get("team_short", ""))}</div>'
+                        f'<div class="pc-price">{fmt_price(p["price"])}</div>'
+                        f'{gw_cells}'
+                        f'</div>'
+                    )
+                bench_html += '</div>'
+                st.markdown(bench_html, unsafe_allow_html=True)
 
             # Formasi + summary metrics
             c1, c2, c3 = st.columns(3)
@@ -537,18 +800,9 @@ if len(sel_new) == 15:
 
         from fpl.transfer import hit_calculator, multi_gw_transfers, fixture_swing_badge
 
-        pool_t = [
-            {
-                "id": p["id"],
-                "web_name": p["web_name"],
-                "team_short": p["team_short"],
-                "team": p["team"],
-                "pos": p["pos"],
-                "price": p["price"],
-                "proj": p["proj"] if p["proj"] else 0.0,
-            }
-            for p in players
-        ]
+        # Keep full rows: availability filters (status/news/chance) are now
+        # part of the transfer engine, so stripping them would hide injuries.
+        pool_t = players
 
         multi_suggestions = multi_gw_transfers(squad, pool_t, gw_projs, bank=int(bank * 10), horizon=3)
 
@@ -565,39 +819,15 @@ if len(sel_new) == 15:
                 )
                 swing = fixture_swing_badge(gw_projs, best_rep["id"], horizon=3)
                 swing_html = f" <span class='fdr-badge fdr-1'>{swing}</span>" if swing else ""
-
-                w_name = w['web_name']  # pyrefly: ignore[bad-index]
-                w_team = w['team_short']  # pyrefly: ignore[bad-index]
-
-                st.markdown(
-                    f"""
-                    <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:6px; padding:10px 14px 8px 14px; margin-bottom:8px; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
-                        <div style="display:flex; align-items:center; justify-content:space-between;">
-                            <div style="flex:1;">
-                                <div style="display:flex; align-items:baseline; gap:6px;">
-                                    <span style="font-size:0.7rem; color:#ef4444; font-weight:700; text-transform:uppercase;">OUT</span>
-                                    <span style="color:#0f172a; font-weight:600; font-size:1rem;">{esc(w_name)}</span>
-                                </div>
-                                <div style="color:#64748b; font-size:0.85rem; margin-top:2px;">{esc(w_team)} · £{w['price']/10:.1f}m · Proj: <span style="color:#37003c;font-weight:600;">{s['player_total']:.1f}</span></div>
-                            </div>
-                            <div style="flex:0 0 auto; display:flex; flex-direction:column; align-items:center; padding:0 12px;">
-                                <div style="color:#16a34a; font-weight:700; font-size:1rem; background:#dcfce7; padding:2px 8px; border-radius:12px; margin-bottom:2px;">+{s['gain']:.1f} pts</div>
-                                <div style="color:#94a3b8; font-size:1.1rem; margin-top:-2px;">➔</div>
-                            </div>
-                            <div style="flex:1; text-align:right;">
-                                <div style="display:flex; align-items:baseline; gap:6px; justify-content:flex-end;">
-                                    <span style="color:#0f172a; font-weight:600; font-size:1rem;">{esc(best_rep['web_name'])}</span>
-                                    <span style="font-size:0.7rem; color:#22c55e; font-weight:700; text-transform:uppercase;">IN</span>
-                                </div>
-                                <div style="color:#64748b; font-size:0.85rem; margin-top:2px;">Proj: <span style="color:#37003c;font-weight:600;">{best_rep['proj_total']:.1f}</span> · £{best_rep['price']/10:.1f}m · {esc(best_rep['team_short'])}</div>
-                            </div>
-                        </div>
-                        <div style="display:flex; justify-content:center; gap:6px; margin-top:8px; padding-top:8px; border-top:1px dashed #f1f5f9; transform:scale(0.9);">
-                            {hit_badge}{swing_html}
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+                st.html(
+                    transfer_card_html(
+                        w,
+                        best_rep,
+                        s["player_total"],
+                        best_rep["proj_total"],
+                        s["gain"],
+                        extra_badges=f"{hit_badge}{swing_html}",
+                    )
                 )
         else:
             st.info("Tidak ada transfer yang menguntungkan berdasarkan proyeksi 3 GW ke depan.")
@@ -614,31 +844,7 @@ if len(sel_new) == 15:
                 best_rep = cast(dict, s["reps"][0])
                 w_proj = gw_projs.get(w['id'], [0])[0]
                 rep_proj = gw_projs.get(best_rep['id'], [0])[0]
-                st.markdown(
-                    f"""
-                    <div style="display:flex; align-items:center; justify-content:space-between; background:#ffffff; border:1px solid #e2e8f0; border-radius:6px; padding:10px 14px; margin-bottom:8px; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
-                        <div style="flex:1;">
-                            <div style="display:flex; align-items:baseline; gap:6px;">
-                                <span style="font-size:0.7rem; color:#ef4444; font-weight:700; text-transform:uppercase;">OUT</span>
-                                <span style="color:#0f172a; font-weight:600; font-size:1rem;">{esc(w['web_name'])}</span>
-                            </div>
-                            <div style="color:#64748b; font-size:0.85rem; margin-top:2px;">{esc(w['team_short'])} · £{w['price']/10:.1f}m · Proj: <span style="color:#37003c;font-weight:600;">{w_proj:.1f}</span></div>
-                        </div>
-                        <div style="flex:0 0 auto; display:flex; flex-direction:column; align-items:center; padding:0 8px; width:100px;">
-                            <div style="color:#16a34a; font-weight:700; font-size:1rem; background:#dcfce7; padding:2px 8px; border-radius:12px; margin-bottom:2px;">+{s['gain']:.1f} pts</div>
-                            <div style="color:#94a3b8; font-size:1.1rem; margin-top:-2px;">➔</div>
-                        </div>
-                        <div style="flex:1; text-align:right;">
-                            <div style="display:flex; align-items:baseline; gap:6px; justify-content:flex-end;">
-                                <span style="color:#0f172a; font-weight:600; font-size:1rem;">{esc(best_rep['web_name'])}</span>
-                                <span style="font-size:0.7rem; color:#22c55e; font-weight:700; text-transform:uppercase;">IN</span>
-                            </div>
-                            <div style="color:#64748b; font-size:0.85rem; margin-top:2px;">Proj: <span style="color:#37003c;font-weight:600;">{rep_proj:.1f}</span> · £{best_rep['price']/10:.1f}m · {esc(best_rep['team_short'])}</div>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                st.html(transfer_card_html(w, best_rep, w_proj, rep_proj, s["gain"]))
         else:
             st.info("Tidak ada transfer yang menguntungkan untuk 1 GW ke depan.")
 
@@ -657,8 +863,14 @@ if len(sel_new) == 15:
             ai_hit = hit_calculator(ai_w, ai_rep, gw_projs, horizon=3)
             hit_msg = "Walaupun terkena penalti -4 poin (HIT), transfer ini **tetap direkomendasikan** karena secara matematis masih surplus poin bersih di akhir GW3." if ai_hit["worth_hit"] else "Jika Anda masih memiliki *Free Transfer*, lakukan perpindahan ini. Namun jika harus kena penalti (HIT), lebih baik ditunda."
             
+            ai_out_av = availability(ai_w)
+            ai_in_av = availability(ai_rep)
             reasoning = f"**AI Assistant:** Berdasarkan analisis prediktif algoritma kami, melepas **{ai_w['web_name']}** (£{ai_w['price']/10:.1f}m) adalah keputusan terbaik minggu ini (potensi 3 GW hanya {top_ai['player_total']:.1f} poin). "
             reasoning += f"Sebagai gantinya, masukkan **{ai_rep['web_name']}** (£{ai_rep['price']/10:.1f}m) yang sedang dalam momentum bagus dengan jadwal mendukung (proyeksi 3 GW: {top_ai['reps'][0]['proj_total']:.1f} poin). "
+            if ai_out_av["pct"] < 100:
+                reasoning += f"Alasan tambahan: **{ai_w['web_name']}** berstatus {ai_out_av['label']} — {ai_out_av['news'] or 'peluang main tidak penuh'}. "
+            if ai_in_av["pct"] < 100:
+                reasoning += f"Catatan risiko: pengganti hanya {ai_in_av['label']}. "
             reasoning += f"Langkah ini akan mendongkrak poin tim Anda sebesar **+{ai_gain:.1f} poin**. {hit_msg}"
             
             st.success(reasoning)

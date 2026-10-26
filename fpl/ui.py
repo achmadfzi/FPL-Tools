@@ -1,9 +1,11 @@
 import html as _html
+import textwrap
 from datetime import datetime
 
 import streamlit as st
 
 from .api import CACHE_FILE, BASE_URL, get_game_data
+from .availability import availability as player_availability
 from .model import build_projection_table
 from .utils import FDR_LABELS, STATUS_LABELS, fmt_deadline_wib, fmt_price
 
@@ -208,6 +210,95 @@ p, span, div, label { color: inherit; }
 .fdr-3 { background: #e2e8f0; color: #1e293b; }
 .fdr-4 { background: #FF1751; color: #ffffff; }
 .fdr-5 { background: #80072D; color: #ffffff; }
+
+/* ── TRANSFER CARDS (OUT → IN) ─────────────────────── */
+.trf-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px 14px 10px;
+  margin-bottom: 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  overflow: hidden;
+}
+.trf-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+.trf-side { min-width: 0; }
+.trf-right { text-align: right; }
+.trf-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.trf-head-right { justify-content: flex-end; }
+.trf-name {
+  color: #0f172a;
+  font-weight: 600;
+  font-size: .95rem;
+  overflow-wrap: anywhere;
+}
+.trf-tag {
+  font-size: .64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  flex: 0 0 auto;
+}
+.trf-out { color: #b91c1c; background: #fee2e2; }
+.trf-in { color: #15803d; background: #dcfce7; }
+.trf-meta {
+  color: #64748b;
+  font-size: .76rem;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.trf-meta b { color: #37003c; font-weight: 600; }
+.trf-avail { margin-top: 5px; }
+.trf-avail-right { display: flex; justify-content: flex-end; }
+.trf-news {
+  color: #b91c1c;
+  font-size: .71rem;
+  line-height: 1.25;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.trf-center { text-align: center; }
+.trf-gain {
+  color: #15803d;
+  background: #dcfce7;
+  font-weight: 700;
+  font-size: .9rem;
+  padding: 3px 9px;
+  border-radius: 999px;
+  display: inline-block;
+  white-space: nowrap;
+}
+.trf-arrow { color: #94a3b8; font-size: 1.05rem; line-height: 1; margin-top: 3px; }
+.trf-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px dashed #f1f5f9;
+}
+@media (max-width: 640px) {
+  .trf-grid { grid-template-columns: 1fr; gap: 8px; }
+  .trf-right { text-align: left; }
+  .trf-head-right { justify-content: flex-start; }
+  .trf-avail-right { justify-content: flex-start; }
+  .trf-center { display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .trf-arrow { margin-top: 0; }
+}
 
 .pos-badge {
   display: inline-block;
@@ -655,6 +746,97 @@ def status_badge_html(status):
     return f'<span class="fdr-badge" style="background:{bg};color:{color}">{esc(label)}</span>'
 
 
+def availability_badge_html(p):
+    """Badge combining injury/suspension status and playing chance."""
+    av = player_availability(p)
+    if av["is_out"]:
+        bg = "#dc2626"
+    elif av["pct"] < 75:
+        bg = "#d97706"
+    elif av["pct"] < 100 or av["status"] == "d":
+        bg = "#f59e0b"
+    else:
+        bg = "#16a34a"
+    title = av["news"] or av["status_label"]
+    return (
+        f'<span class="fdr-badge" style="background:{bg};color:#ffffff" '
+        f'title="{esc(title)}">{esc(av["label"])}</span>'
+    )
+
+
+def transfer_card_html(out, in_player, out_total, in_total, gain, extra_badges=""):
+    """Responsive OUT → IN transfer card with availability badges.
+
+    Kept in one place so the Team Builder and the Kapten & Transfer page
+    render the same clean layout instead of each page inventing its own
+    flex markup.
+    """
+    out_av = player_availability(out)
+    in_av = player_availability(in_player) if in_player is not None else None
+    out_news = (
+        f'<div class="trf-news">{esc(out_av["news"][:110])}</div>'
+        if out_av["news"]
+        else ""
+    )
+    in_news = (
+        f'<div class="trf-news" style="text-align:inherit">{esc(in_av["news"][:110])}</div>'
+        if in_av and in_av["news"] and (in_av["pct"] < 100 or in_av["status"] != "a")
+        else ""
+    )
+    footer = f'<div class="trf-footer">{extra_badges}</div>' if extra_badges else ""
+
+    if in_player is not None:
+        in_name = esc(in_player.get("web_name", ""))
+        in_meta = (
+            f'{esc(in_player.get("team_short", ""))} · '
+            f'£{(in_player.get("price") or 0) / 10:.1f}m · Proj <b>{float(in_total or 0):.1f}</b>'
+        )
+        in_badge_html = availability_badge_html(in_player)
+        in_tag = '<span class="trf-tag trf-in">IN</span>'
+        gain_html = f'<div class="trf-gain">{gain:+.1f} pts</div>'
+        arrow_html = '<div class="trf-arrow">➔</div>'
+    else:
+        in_name = "Belum ada opsi"
+        in_meta = "Tidak ada pengganti dalam budget"
+        in_badge_html = '<span class="fdr-badge" style="background:#e2e8f0;color:#475569">NO IN</span>'
+        in_tag = ""
+        gain_html = '<div class="trf-gain" style="background:#f1f5f9;color:#64748b">—</div>'
+        arrow_html = ""
+
+    return textwrap.dedent(f"""
+    <div class="trf-card">
+      <div class="trf-grid">
+        <div class="trf-side">
+          <div class="trf-head">
+            <span class="trf-tag trf-out">OUT</span>
+            <span class="trf-name">{esc(out.get("web_name", ""))}</span>
+          </div>
+          <div class="trf-meta">
+            {esc(out.get("team_short", ""))} · £{(out.get("price") or 0) / 10:.1f}m ·
+            Proj <b>{float(out_total or 0):.1f}</b>
+          </div>
+          <div class="trf-avail">{availability_badge_html(out)}</div>
+          {out_news}
+        </div>
+        <div class="trf-center">
+          {gain_html}
+          {arrow_html}
+        </div>
+        <div class="trf-side trf-right">
+          <div class="trf-head trf-head-right">
+            <span class="trf-name">{in_name}</span>
+            {in_tag}
+          </div>
+          <div class="trf-meta">{in_meta}</div>
+          <div class="trf-avail trf-avail-right">{in_badge_html}</div>
+          {in_news}
+        </div>
+      </div>
+      {footer}
+    </div>
+    """).strip()
+
+
 def player_card_html(p, tag=None):
     parts = []
     if tag:
@@ -666,8 +848,9 @@ def player_card_html(p, tag=None):
         home = "Kandang" if p.get("is_home") else "Tandang"
         fixture = f'<div class="p-fixture">vs {esc(p["opponent_short"])} · {home} {fdr_badge_html(p.get("fdr"))}</div>'
     chance = ""
-    if p.get("chance") is not None:
-        chance = f'<div class="p-sub">Peluang main {float(p["chance"])*100:.0f}%</div>'
+    av = player_availability(p)
+    if av["pct"] < 100 or av["status"] != "a":
+        chance = f'<div class="p-sub">Peluang main {av["pct"]:.0f}%</div>'
     proj = f'{p["proj"]:.2f}' if p["proj"] is not None else "-"
     return (
         f'<div class="p-card">{"".join(parts)}{img}'

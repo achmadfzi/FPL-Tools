@@ -20,6 +20,8 @@ from collections import Counter
 
 import numpy as np
 
+from .availability import availability
+
 FT_MAX = 5
 HIT_COST = 4
 POS_NEED = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 3}
@@ -261,7 +263,7 @@ def optimize_squad(df, budget, player_values, exclude_ids=(), forced_ids=(), clu
         pid = int(r["id"])
         if pid in exclude_ids:
             continue
-        if r.get("status") in ("i", "u", "n"):
+        if availability(r)["is_out"]:
             continue
         v = player_values.get(pid)
         if v is None:
@@ -337,7 +339,8 @@ def optimize_squad(df, budget, player_values, exclude_ids=(), forced_ids=(), clu
 
 
 def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
-                   max_per_gw=2, top_singles=24, top_doubles=50):
+                   max_per_gw=2, top_singles=24, top_doubles=50,
+                   min_in_chance=0.0):
     """Beam search over transfer sequences for the next `horizon` GWs.
 
     Args:
@@ -347,9 +350,12 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
         gw_projs: {player_id: [pts_gw0, pts_gw1, ...]} (fpl.horizon)
         horizon, beam_width: search effort
         max_per_gw: max transfers considered per GW (0-2 recommended)
+        min_in_chance: minimum next-round chance for *incoming* players
+            (0 = block only unavailable players; 75 = avoid doubtful ones)
     Returns: dict with plan steps, totals and the hold baseline.
     """
     cur = int(gd.next_event["id"])
+    min_in_chance = float(min_in_chance or 0)
     info = {}
     for r in df.to_dict("records"):
         pid = int(r["id"])
@@ -359,6 +365,9 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
             "price": int(r.get("price", 0)),
             "name": r.get("web_name", str(pid)),
             "team_short": r.get("team_short", ""),
+            "status": r.get("status", "a"),
+            "news": r.get("news") or "",
+            "availability": availability(r),
         }
     pos_of = {pid: v["pos"] for pid, v in info.items()}
     value_of = {pid: (gw_projs.get(pid) or [0.0] * horizon) for pid in info}
@@ -386,9 +395,19 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
         c = Counter(pos_of[i] for i in ids)
         return all(c.get(p, 0) == n for p, n in POS_NEED.items())
 
-    # Max candidate pool per position for speed
-    pool_by_pos = {p: [pid for pid, v in info.items() if v["pos"] == p]
-                   for p in POS_NEED}
+    # Candidate pool per position. Incoming players must be available; this
+    # keeps the planner from recommending injured/suspended players even when
+    # their projection is stale or missing.
+    pool_by_pos = {
+        p: [
+            pid
+            for pid, v in info.items()
+            if v["pos"] == p
+            and not v["availability"]["is_out"]
+            and v["availability"]["pct"] >= min_in_chance
+        ]
+        for p in POS_NEED
+    }
 
     states = [{
         "squad": squad0, "bank": bank0, "ft": ft0,
@@ -424,6 +443,10 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
                 budget_in = st["bank"] + sell_now
                 out_pos = pos_of[out]
                 out_total = totals.get(out, 0.0)
+                out_av = info[out]["availability"]
+                # An unavailable player is worth selling even for a small
+                # projected gain; a normal transfer needs a clearer edge.
+                min_gain = 0.2 if out_av["is_out"] else 1.0
                 for in_pid in pool_by_pos[out_pos]:
                     if in_pid in squad_set:
                         continue
@@ -431,7 +454,7 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
                     if pinfo["price"] > budget_in:
                         continue
                     gain = totals.get(in_pid, 0.0) - out_total
-                    if gain <= 1.0:
+                    if gain <= min_gain:
                         continue
                     new_squad = tuple(sorted((squad_set - {out}) | {in_pid}))
                     singles.append((gain, out, in_pid, new_squad))
@@ -513,13 +536,25 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
         trs = []
         for t in step["transfers"]:
             out, inn = t["out"], t["in"]
+            out_info = info.get(out, {})
+            in_info = info.get(inn, {})
+            out_av = out_info.get("availability") or {}
+            in_av = in_info.get("availability") or {}
             trs.append({
-                "out_name": info.get(out, {}).get("name", out),
-                "out_short": info.get(out, {}).get("team_short", ""),
-                "out_price": info.get(out, {}).get("price", 0),
-                "in_name": info.get(inn, {}).get("name", inn),
-                "in_short": info.get(inn, {}).get("team_short", ""),
-                "in_price": info.get(inn, {}).get("price", 0),
+                "out_id": out,
+                "out_name": out_info.get("name", out),
+                "out_short": out_info.get("team_short", ""),
+                "out_price": out_info.get("price", 0),
+                "out_status": out_av.get("status_label", "-"),
+                "out_chance": out_av.get("pct"),
+                "out_news": out_av.get("news", ""),
+                "in_id": inn,
+                "in_name": in_info.get("name", inn),
+                "in_short": in_info.get("team_short", ""),
+                "in_price": in_info.get("price", 0),
+                "in_status": in_av.get("status_label", "-"),
+                "in_chance": in_av.get("pct"),
+                "in_news": in_av.get("news", ""),
                 "gain_horizon": t.get("gain_horizon"),
             })
         enriched.append({

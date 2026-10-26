@@ -2,10 +2,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from fpl.api import get_element_summary
+from fpl.availability import availability, chance_pct
 from fpl.optimizer import fixture_line, projection_explanation
 from fpl.ui import (
     apply_theme,
     autorefresh,
+    availability_badge_html,
     bar,
     esc,
     fdr_badge_html,
@@ -40,7 +42,7 @@ with c2:
 with c3:
     max_price = st.slider("Harga maksimal (£juta)", 4.0, 15.0, 15.0, 0.5)
 with c4:
-    status_filter = st.selectbox("Status", ["Semua", "Tersedia", "Cedera", "Diragukan", "Tidak Tersedia"])
+    status_filter = st.selectbox("Status", ["Semua", "Tersedia", "Cedera", "Diragukan", "Suspended", "Tidak Tersedia"])
 
 c_last, c_spacer = st.columns([1, 3])
 with c_last:
@@ -61,6 +63,8 @@ elif status_filter == "Cedera":
     view = view[view["status"] == "i"]
 elif status_filter == "Diragukan":
     view = view[view["status"] == "d"]
+elif status_filter == "Suspended":
+    view = view[view["status"] == "s"]
 elif status_filter == "Tidak Tersedia":
     view = view[view["status"].isin(["u", "n"])]
 if last_filter == "Bintang (≥200 poin)":
@@ -103,12 +107,12 @@ has_ml = "ml_proj" in view.columns and view["ml_proj"].notna().any()
 cols = ["web_name", "team_short", "pos", "price", "proj"]
 if has_ml:
     cols.append("ml_proj")
-cols += ["xGI_per90", "dc_prob", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance", "status"]
+cols += ["xGI_per90", "dc_prob", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance_this", "chance_next", "status"]
 
 col_names = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi"]
 if has_ml:
     col_names.append("ML Proj")
-col_names += ["xGI/90", "DC%", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang", "Status"]
+col_names += ["xGI/90", "DC%", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang Kini", "Peluang Depan", "Status"]
 
 # Keep only columns actually available in the projection table (defensive:
 # DefCon columns are attached best-effort).
@@ -156,13 +160,8 @@ def fmt_fdr(v):
 
 
 def fmt_chance(v):
-    try:
-        f = float(v)
-        if f <= 1.0:
-            return f"{int(f * 100)}%"
-        return f"{int(f)}%"
-    except (ValueError, TypeError):
-        return "-"
+    pct = chance_pct(v)
+    return "-" if pct is None else f"{pct:.0f}%"
 
 
 def fmt_dc(v):
@@ -173,7 +172,7 @@ def fmt_dc(v):
         return "-"
 
 
-style_subsets = ["Pemain", "Tim", "xGI/90", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "Peluang", "DC%"]
+style_subsets = ["Pemain", "Tim", "xGI/90", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "Peluang Kini", "Peluang Depan", "DC%"]
 proj_subsets = ["Proyeksi"]
 format_dict = {
     "Harga": "£{:.1f}m",
@@ -186,7 +185,8 @@ format_dict = {
     "PPG": "{:.2f}",
     "Kepemilikan": "{:.1f}%",
     "FDR": fmt_fdr,
-    "Peluang": fmt_chance,
+    "Peluang Kini": fmt_chance,
+    "Peluang Depan": fmt_chance,
 }
 if has_ml:
     format_dict["ML Proj"] = "{:.2f}"
@@ -223,7 +223,7 @@ with c1:
           {player_img_html(row, style="width:96px;height:120px;object-fit:contain;background:#f5f6f8;border-radius:12px")}
           <h3 style="margin:10px 0 2px">{esc(row['web_name'])}</h3>
           <div>{esc(row['team_name'])} {pos_badge_html(row['pos'])}</div>
-          <div class="p-team" style="margin:8px 0">{fmt_price(row['price'])} {status_badge_html(row['status'])}</div>
+          <div class="p-team" style="margin:8px 0">{fmt_price(row['price'])} {status_badge_html(row['status'])} {availability_badge_html(row)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -245,7 +245,9 @@ with c2:
         """,
         unsafe_allow_html=True,
     )
+    av = availability(row)
     info = [
+        f"<div class='info-line'>Peluang main: GW ini <b>{av['this_pct']:.0f}%</b> · GW depan <b>{av['next_pct']:.0f}%</b> · {esc(av['label'])}</div>",
         f"<div class='info-line'>Kepemilikan: <b>{row['selected_by']:.1f}%</b></div>",
         f"<div class='info-line'>Menit bermain: <b>{row['minutes']}</b> | Starter: <b>{row['starts']}</b></div>",
         f"<div class='info-line'>Poin total: <b>{row['total_points']}</b> | Form: <b>{row['form']:.2f}</b> | PPG: <b>{row['ppg']:.2f}</b></div>",

@@ -2,12 +2,12 @@
   "team_id": 925693,
   "team_name": "Real Madas FC",
   "manager_name": "Achmad Fauzi",
-  "summary_overall_points": 386,
-  "summary_overall_rank": 2462931,
-  "summary_event_points": 65,
-  "bank": 0.9,
-  "team_value": 101.4,
-  "gw_synced": 6,
+  "summary_overall_points": 495,
+  "summary_overall_rank": 2574046,
+  "summary_event_points": 39,
+  "bank": 1.0,
+  "team_value": 102.6,
+  "gw_synced": 8,
   "active_chip": null,
   "chips_played": [
     {
@@ -26,38 +26,38 @@
     8,
     449,
     115,
-    277,
     87,
-    12,
+    399,
     40,
     124,
+    565,
     346,
     411,
     109,
-    368,
-    565,
-    165
+    397,
+    165,
+    277
   ],
   "starters": [
     1,
     8,
     449,
     115,
-    277,
     87,
-    12,
+    399,
     40,
     124,
+    565,
     346,
     411
   ],
   "bench": [
     109,
-    368,
-    565,
-    165
+    397,
+    165,
+    277
   ],
   "captain_id": 411,
-  "vice_captain_id": 368,
-  "synced_at": 1792164569.052802
+  "vice_captain_id": 124,
+  "synced_at": 1793019980.0096908
 }

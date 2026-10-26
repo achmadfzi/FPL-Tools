@@ -40,6 +40,7 @@ from itertools import combinations, permutations
 
 import numpy as np
 
+from .availability import chance_factor
 from .utils import CS_POINTS, DC_POINTS
 
 GOAL_PTS = {"GK": 6, "DEF": 6, "MID": 5, "FWD": 4}
@@ -59,13 +60,8 @@ RED_P = {"GK": 0.006, "DEF": 0.012, "MID": 0.010, "FWD": 0.008}
 
 
 def _chance(row):
-    c = row.get("chance")
-    try:
-        if c is None or (isinstance(c, float) and math.isnan(c)):
-            return 1.0
-        return max(0.0, min(1.0, float(c) / 100.0))
-    except (TypeError, ValueError):
-        return 1.0
+    """Probability of playing, using the shared availability rules."""
+    return chance_factor(row, "next")
 
 
 def minutes_proxy(row):

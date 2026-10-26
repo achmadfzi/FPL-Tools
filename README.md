@@ -7,8 +7,11 @@ Tools bantu bermain Fantasy Premier League (FPL) berbasis data publik resmi FPL 
 - **🎯 Rencana Aksi (halaman baru)** - semua keputusan GW ini dalam satu layar: XI EV-optimal (aturan auto-sub persis), kapten & wakil EV, urutan bench, rencana transfer multi-GW (FT & hit), estimasi EV chip (TC/BB/FH/WC), dan peringatan status pemain
 - **Beranda** - Info Gameweek & deadline, rekomendasi kapten (+ **EV Monte Carlo**), tabel FDR (tingkat kesulitan lawan), top-10 proyeksi poin, ringkasan akurasi model
 - **Player Explorer** - Jelajahi 600+ pemain, filter posisi/tim/harga/status, detail proyeksi + tren form 8 GW terakhir, kolom xGI/90 dan CS probability
-- **Kapten & Transfer** - Kandidat kapten terbaik (**+ simulasi Monte Carlo kapten/wakil berbasis EV & risiko blank**), value picks (poin per £1juta), fixture ticker (FDR 6 GW ke depan), differential picks, pemain berisiko cedera
+- **Kapten & Transfer** - Kandidat kapten terbaik (**+ simulasi Monte Carlo kapten/wakil berbasis EV & risiko blank**), value picks (poin per £1juta), fixture ticker (FDR 6 GW ke depan), differential picks, pemain berisiko cedera, dan **rekomendasi transfer berbasis cedera & peluang main**
+- **Transfer karena cedera** - gabungan status cedera/suspended, kabar resmi FPL, peluang main GW ini & GW depan, plus pengganti terbaik dan gain 3 GW. Pemain masuk dengan peluang 0% otomatis tidak disarankan
 - **Team Builder** - Masukkan skuad 15 pemain Anda (budget £100m), optimasi XI terbaik (tampilan lapangan) + kapten + saran transfer multi-GW + hit calculator
+- **Drag & Drop Skuad** - susun 15 pemain dengan menggeser kartu pemain dari daftar kandidat ke posisi GK/DEF/MID/FWD, lengkap dengan validasi budget, kuota posisi, dan maksimal 3 pemain per klub. Tersedia juga mode Daftar (multiselect) sebagai fallback
+- **Drag & Drop Pitch** - tukar starter ↔ bench langsung di gambar lapangan, atur urutan sub, dan kembalikan ke XI otomatis kapan saja. Formasi dan aturan kiper divalidasi di browser + Python
 - **Chip Strategi** - Rekomendasi kapan memakai Triple Captain, Bench Boost, Wildcard, & Free Hit — termasuk chip sequence planner
 - **Akurasi Model** - Evaluasi akurasi proyeksi vs skor aktual: MAE, RMSE, breakdown per posisi & FDR, saran penyesuaian bobot
 - **Rencana 3 GW (Team Builder)** - Proyeksi & XI terbaik untuk 3 Gameweek ke depan; XI boleh dirotasi gratis, transfer diminimalkan
@@ -143,6 +146,18 @@ Catatan: statistik musim lalu hanyalah acuan — kombinasi dengan proyeksi GW in
 - **Differential Picks**: Pemain dengan kepemilikan < 5% tapi proyeksi tinggi — senjata rahasia untuk naik rank.
 - **Fixture Swing Badge**: Indikator pemain yang akan menghadapi serangkaian lawan mudah.
 
+## Transfer Berbasis Cedera & Peluang Main
+
+Data cedera dan peluang main diambil otomatis dari `bootstrap-static` FPL (tanpa API tambahan):
+
+- `status` (`a`/`d`/`i`/`s`/`u`/`n`), `news`, `chance_of_playing_this_round`, dan `chance_of_playing_next_round`.
+- `chance_of_playing_*` adalah **peluang main** (0/25/50/75/100%), bukan kepemilikan. Kepemilikan tetap `selected_by_percent`.
+- `fpl/availability.py` menjadi satu sumber aturan: pemain `i/u/n/s` selalu 0%, pemain `d` tanpa persentase dianggap 75%, pemain fit tanpa persentase dianggap 100%.
+- Proyeksi, simulator Monte Carlo, dan planner transfer memakai aturan yang sama, sehingga pemain cedera tidak bisa lolos sebagai pemain masuk.
+- Halaman **Kapten & Transfer** menampilkan section **🚑 Transfer karena Cedera & Peluang Main**: status, peluang GW ini/depan, kabar, pengganti terbaik, gain 3 GW, dan aksi `JUAL SEKARANG` / `PANTAU`.
+- **Rencana Aksi** menambahkan status & peluang main pada rencana transfer dan peringatan skuad; **Team Builder** menambahkan badge availability pada kartu transfer.
+- Filter peluang main minimum (0–100%) bisa diatur untuk menghindari pemain diragukan (mis. 75%).
+
 ## Akurasi Model (Accuracy Tracking)
 
 - **Auto-save**: Proyeksi setiap pemain disimpan otomatis sebelum deadline GW.
@@ -170,6 +185,49 @@ Halaman **🎯 Rencana Aksi** (paling atas di sidebar) merangkum semua keputusan
 5. **Peringatan** status cedera/diragukan dan bench berproyeksi tinggi.
 
 Tombol **backfill riwayat pemain** juga ada di halaman ini (sekali jalan, ±200 pemain, cache 6 jam).
+
+## Drag & Drop Skuad (Team Builder)
+
+Halaman **Team Builder** punya dua mode penyusunan skuad:
+
+- **🧲 Drag & Drop** — komponen JavaScript (SortableJS) menampilkan daftar kandidat dan empat container posisi (GK/DEF/MID/FWD). Pemain bisa digeser ke container, dikeluarkan dengan tombol `×`, atau ditambah dengan tombol `+`.
+- **📋 Daftar** — multiselect lama tetap tersedia sebagai fallback.
+
+Validasi dilakukan di browser dan diulang di Python:
+
+- Kuota posisi 2 GK / 5 DEF / 5 MID / 3 FWD.
+- Maksimal 3 pemain per klub.
+- Budget £100m (atau budget nyata untuk tim FPL yang sudah tersinkron).
+- Drop yang tidak valid ditolak dengan pesan, bukan disimpan diam-diam.
+- Skuad tetap tersimpan lewat tombol **Simpan Tim** yang sama.
+
+Komponen ada di `fpl/components/squad_builder/`. Asset hasil build sudah disertakan, jadi aplikasi bisa jalan tanpa Node. Untuk mengubah UI frontend:
+
+```bash
+cd fpl/components/squad_builder
+npm install
+npm run build
+```
+
+### Drag & Drop Pitch (XI & Bench)
+
+Di bawah squad builder, pitch interaktif memungkinkan:
+
+- drag pemain starter ke kartu pemain lain untuk **swap** dengan posisi yang sama;
+- drag starter ke bench atau bench ke starter (posisi harus sama);
+- mengatur urutan 3 sub outfield;
+- memindahkan kiper hanya antara slot GK starter dan slot GK cadangan;
+- tombol **Auto XI** untuk kembali ke lineup optimal.
+
+Validasi formasi (1 GK, 3–5 DEF, 2–5 MID, 1–3 FWD), jumlah bench, dan keunikan 15 pemain dilakukan di komponen JS dan diulang di `fpl/lineup.py`. Lineup manual disimpan di session state; jika skuad berubah, lineup kembali ke XI otomatis.
+
+Komponen pitch ada di `fpl/components/lineup_builder/` dan dibangun dengan cara yang sama:
+
+```bash
+cd fpl/components/lineup_builder
+npm install
+npm run build
+```
 
 ## Perencanaan Transfer (FT, Hit & Harga Jual)
 

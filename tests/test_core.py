@@ -11,7 +11,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fpl import calibration, defcon, planner  # noqa: E402
+from fpl import availability, calibration, defcon, lineup, optimizer, planner, squad_builder, transfer  # noqa: E402
 from fpl.simulator import autosub_points, _lineup_candidates  # noqa: E402
 
 
@@ -189,6 +189,222 @@ def test_club_limit_filters_candidates():
         from collections import Counter
         cnt = Counter(clinfo[rows[i]["id"]] for i in c["xi"])
         assert max(cnt.values()) <= 3
+
+
+# ---------------------------------------------------------------------------
+# Availability (injury / chance of playing)
+# ---------------------------------------------------------------------------
+
+
+def test_availability_status_and_chance():
+    # Injured/suspended players are unavailable even if FPL leaves chance null
+    assert availability.chance_factor({"status": "i", "chance": None}) == 0.0
+    assert availability.chance_factor({"status": "s", "chance": 75}) == 0.0
+    assert availability.chance_factor({"status": "a", "chance": None}) == 1.0
+    assert abs(availability.chance_factor({"status": "d", "chance": None}) - 0.75) < 1e-9
+    assert availability.chance_pct(0.5) == 50.0
+    assert availability.chance_pct(75) == 75.0
+
+    av = availability.availability({"status": "i", "chance": 0, "news": "Knee injury"})
+    assert av["is_out"] and av["pct"] == 0.0
+    assert av["action"] == "JUAL SEKARANG"
+    assert av["category"] == "injury"
+
+
+def test_availability_news_parsing():
+    injury = availability.parse_news("Hamstring injury - Expected back 21 Nov")
+    assert injury["category"] == "injury"
+    assert injury["return_text"] == "21 Nov"
+
+    suspended = availability.parse_news("Suspended until 8 Nov")
+    assert suspended["category"] == "suspension"
+    assert suspended["return_text"] == "8 Nov"
+
+    transferred = availability.parse_news("Has joined Al Hilal permanently")
+    assert transferred["category"] == "unavailable"
+
+
+def test_injury_transfer_suggestions_filter_unavailable_incoming():
+    squad = [{
+        "id": 1, "web_name": "Injured", "team_short": "AAA", "team": 1,
+        "pos": "MID", "price": 50, "proj": 0.0, "status": "i",
+        "chance": 0, "chance_next": 0, "chance_this": 0, "news": "Knee injury",
+        "selected_by": 10.0,
+    }]
+    pool = [
+        squad[0],
+        # Would be the highest scorer, but is also injured -> must be ignored.
+        {"id": 2, "web_name": "AlsoInjured", "team_short": "BBB", "team": 2,
+         "pos": "MID", "price": 50, "proj": 9.0, "status": "i",
+         "chance": 0, "chance_next": 0, "chance_this": 0, "news": "Knee injury",
+         "selected_by": 0.0},
+        {"id": 3, "web_name": "Fit", "team_short": "CCC", "team": 3,
+         "pos": "MID", "price": 50, "proj": 4.0, "status": "a",
+         "chance": 100, "chance_next": 100, "chance_this": 100, "news": "",
+         "selected_by": 1.0},
+    ]
+    gw_projs = {1: [0.0, 0.0, 0.0], 2: [9.0, 9.0, 9.0], 3: [4.0, 4.0, 4.0]}
+
+    suggestions = transfer.injury_transfer_suggestions(squad, pool, gw_projs, bank=0, horizon=3)
+    assert len(suggestions) == 1
+    assert suggestions[0]["action"] == "JUAL SEKARANG"
+    assert suggestions[0]["replacement"]["id"] == 3
+    assert all(
+        rep["id"] != 2
+        for cand in transfer.multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3)
+        for rep in cand["reps"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Drag-and-drop squad builder validation
+# ---------------------------------------------------------------------------
+
+
+def _squad_players():
+    players = {}
+    pid = 1
+    for pos, n in (("GK", 2), ("DEF", 5), ("MID", 5), ("FWD", 3)):
+        for _ in range(n):
+            team = ((pid - 1) % 20) + 1
+            players[pid] = {
+                "id": pid, "web_name": f"{pos}{pid}", "pos": pos,
+                "team": team, "price": 50, "team_short": f"T{team}",
+            }
+            pid += 1
+    return players
+
+
+def test_squad_builder_normalizes_component_value():
+    value = {"GK": [1, "2", 2, "x"], "DEF": [3, 3], "MID": [], "FWD": [4, None]}
+    selected = squad_builder.normalize_selected(value)
+    assert selected["GK"] == [1, 2]
+    assert selected["DEF"] == [3]
+    assert selected["FWD"] == [4]
+    assert squad_builder.selected_ids(selected) == [1, 2, 3, 4]
+
+
+def test_squad_builder_valid_and_invalid_selections():
+    players = _squad_players()
+    valid = squad_builder.group_player_ids(list(players), players)
+    assert squad_builder.validate_selection(valid, players) == []
+
+    too_many_gk = squad_builder.normalize_selected({"GK": [1, 2, 5]})
+    errors = squad_builder.validate_selection(too_many_gk, players)
+    assert any("GK" in e for e in errors)
+
+    wrong_position = squad_builder.normalize_selected({"DEF": [1]})
+    errors = squad_builder.validate_selection(wrong_position, players)
+    assert any("bukan DEF" in e for e in errors)
+
+    # All valid players, but every DEF is from the same club (five players).
+    for pid in (3, 4, 5, 6, 7):
+        players[pid]["team"] = 2
+    club_heavy = squad_builder.empty_selected()
+    club_heavy["DEF"] = [3, 4, 5, 6, 7]
+    errors = squad_builder.validate_selection(club_heavy, players)
+    assert any("per klub" in e for e in errors)
+
+
+def test_squad_builder_budget_and_duplicate_rules():
+    players = _squad_players()
+    for p in players.values():
+        p["price"] = 70
+    selected = squad_builder.group_player_ids(list(players), players)
+    errors = squad_builder.validate_selection(selected, players)
+    assert any("Budget" in e for e in errors)
+
+    dup = squad_builder.normalize_selected({"GK": [1], "DEF": [1]})
+    errors = squad_builder.validate_selection(dup, players)
+    assert any("duplikat" in e.lower() for e in errors)
+
+
+def test_squad_builder_compact_player_payload():
+    import json
+
+    players = _squad_players()
+    players[1]["proj"] = float("nan")
+    players[1]["chance"] = float("nan")
+    payload = squad_builder.compact_player(players[1])
+    assert payload["id"] == 1
+    assert payload["pos"] == "GK"
+    assert payload["price"] == 50
+    assert payload["proj"] == 0.0
+    assert payload["chance"] is None
+    json.dumps([payload], allow_nan=False)  # must be valid component JSON
+
+
+# ---------------------------------------------------------------------------
+# Drag-and-drop pitch lineup
+# ---------------------------------------------------------------------------
+
+
+def _lineup_fixture():
+    players = _squad_players()
+    for i, p in enumerate(players.values()):
+        p["proj"] = float(10 - i * 0.3)
+    squad = list(players.values())
+    result = optimizer.best_xi(squad)
+    xi, bench_out, bench_gk = lineup.default_lineup(result)
+    return players, squad, result, xi, bench_out, bench_gk
+
+
+def test_lineup_default_is_valid():
+    players, squad, result, xi, bench_out, bench_gk = _lineup_fixture()
+    assert len(xi) == 11 and len(bench_out) == 3 and bench_gk is not None
+    assert lineup.validate_lineup(xi, bench_out, bench_gk, players) == []
+    manual = lineup.build_lineup_result(xi, bench_out, bench_gk, players)
+    assert manual["formation"] == result["formation"]
+    assert len(manual["bench"]) == 4
+
+
+def test_lineup_rejects_bad_formations():
+    players, squad, result, xi, bench_out, bench_gk = _lineup_fixture()
+
+    # Duplicate player
+    dup_xi = list(xi)
+    dup_xi[-1] = dup_xi[0]
+    errors = lineup.validate_lineup(dup_xi, bench_out, bench_gk, players)
+    assert any("duplikat" in e.lower() or "15 pemain" in e.lower() for e in errors)
+
+    # Two goalkeepers in the XI: replace a defender with the bench GK.
+    two_gk = list(xi)
+    def_idx = next(i for i, pid in enumerate(two_gk) if players[pid]["pos"] == "DEF")
+    two_gk[def_idx] = bench_gk
+    errors = lineup.validate_lineup(two_gk, bench_out, None, players)
+    assert any("kiper" in e.lower() or "formasi" in e.lower() for e in errors)
+
+    # GK must not sit in the outfield bench.
+    bad_bench = list(bench_out)
+    bad_bench[0] = bench_gk
+    errors = lineup.validate_lineup(xi, bad_bench, bench_gk, players)
+    assert any("bench outfield" in e.lower() for e in errors)
+
+
+def test_lineup_component_value_normalization():
+    import json
+
+    players, squad, result, xi, bench_out, bench_gk = _lineup_fixture()
+    parsed = lineup.normalize_component_value({
+        "xi": [str(x) for x in xi],
+        "bench_out": bench_out + ["x"],
+        "bench_gk": str(bench_gk),
+    })
+    assert parsed["xi"] == xi
+    assert parsed["bench_out"] == bench_out
+    assert parsed["bench_gk"] == bench_gk
+    assert lineup.validate_lineup(
+        parsed["xi"], parsed["bench_out"], parsed["bench_gk"], players
+    ) == []
+
+    players[xi[0]]["proj"] = float("nan")
+    payload = lineup.compact_lineup_player(
+        players[xi[0]],
+        [{"opp": "ARS", "ha": "K", "fdr": 3, "pts": float("nan")}],
+    )
+    assert payload["proj"] == 0.0
+    assert payload["gw"][0]["pts"] == 0.0
+    json.dumps([payload], allow_nan=False)
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ Multi-GW transfer planning, hit calculator, fixture ticker display,
 and differential picks identification.
 """
 
+from .availability import availability
 from .utils import FDR_MULT
 
 
@@ -22,7 +23,16 @@ def multi_gw_value(player, gw_projs, horizon=3):
     return round(sum(projs[:horizon]), 2)
 
 
-def multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3, sell_prices=None, club_max=3) -> list[dict]:
+def multi_gw_transfers(
+    squad,
+    pool,
+    gw_projs,
+    bank=0,
+    horizon=3,
+    sell_prices=None,
+    club_max=3,
+    min_in_chance=0.0,
+) -> list[dict]:
     """Suggest transfers based on total gain over multiple GWs.
 
     Unlike the old suggest_transfers (1 GW only), this considers the total
@@ -32,19 +42,43 @@ def multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3, sell_prices=Non
     ``sell_price(current) + bank`` when `sell_prices` is given. The 3-players-
     per-club rule is enforced on the resulting squad.
 
-    Returns: sorted list of transfer candidates with multi-GW gain.
+    Availability is a hard filter for *incoming* players: injured, suspended
+    or otherwise unavailable players (0% chance) are never suggested. Use
+    ``min_in_chance`` to additionally require a minimum next-round chance
+    (e.g. 75 to avoid doubtful players).
+
+    Returns: sorted list of transfer candidates with multi-GW gain and
+    availability data for both sides.
     """
     from collections import Counter
 
     squad_ids = {p["id"] for p in squad}
     club_counts = Counter(int(p["team"]) for p in squad)
-    by_pos = {pos: [p for p in pool if p["pos"] == pos and p.get("proj", 0) and p["proj"] > 0]
-              for pos in ("GK", "DEF", "MID", "FWD")}
     sell_prices = sell_prices or {}
+    min_in_chance = float(min_in_chance or 0)
+
+    # Pre-compute availability once per player (pool is ~700 rows).
+    avail = {int(p["id"]): availability(p) for p in pool}
+    for p in squad:
+        avail.setdefault(int(p["id"]), availability(p))
+
+    def _buyable(q):
+        av = avail[int(q["id"])]
+        return not av["is_out"] and av["pct"] >= min_in_chance
+
+    by_pos = {
+        pos: [
+            p
+            for p in pool
+            if p["pos"] == pos and p.get("proj", 0) and p["proj"] > 0 and _buyable(p)
+        ]
+        for pos in ("GK", "DEF", "MID", "FWD")
+    }
 
     candidates = []
     for p in squad:
         p_total = multi_gw_value(p, gw_projs, horizon)
+        out_av = avail[int(p["id"])]
         out_sell = sell_prices.get(p["id"], p["price"])
         budget = out_sell + bank
 
@@ -61,10 +95,13 @@ def multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3, sell_prices=Non
                 continue
             q_total = multi_gw_value(q, gw_projs, horizon)
             if q_total > p_total:
+                q_av = avail[int(q["id"])]
                 reps.append({
                     **q,
                     "gain_total": round(q_total - p_total, 2),
                     "proj_total": q_total,
+                    "availability": q_av,
+                    "availability_gain": round(q_av["pct"] - out_av["pct"], 1),
                 })
 
         reps.sort(key=lambda q: q["gain_total"], reverse=True)
@@ -73,14 +110,83 @@ def multi_gw_transfers(squad, pool, gw_projs, bank=0, horizon=3, sell_prices=Non
             candidates.append({
                 "player": p,
                 "player_total": p_total,
+                "out_availability": out_av,
                 "reps": top3,
                 "gain": top3[0]["gain_total"],
-                "gain_1gw": round(top3[0].get("proj", 0) - p.get("proj", 0), 2),
+                "gain_1gw": round(top3[0].get("proj", 0) - (p.get("proj") or 0), 2),
                 "sell_price": out_sell,
             })
 
     candidates.sort(key=lambda c: c["gain"], reverse=True)
     return candidates
+
+
+def injury_transfer_suggestions(
+    squad,
+    pool,
+    gw_projs,
+    bank=0,
+    horizon=3,
+    sell_prices=None,
+    club_max=3,
+    min_in_chance=0.0,
+) -> list[dict]:
+    """Combine injury/availability data with the best transfer replacement.
+
+    Every squad player who is not fully available (injured, suspended,
+    doubtful, or with a reduced chance of playing) appears once. The best
+    affordable replacement is attached when one exists, together with the
+    multi-GW gain and an action label:
+
+    - ``JUAL SEKARANG`` for 0% chance,
+    - ``PANTAU`` for 25-75% or doubtful,
+    - ``TIDAK ADA OPSI`` when no better replacement fits the budget.
+
+    Players who are fully available are omitted: injury is not a reason to
+    sell them.
+    """
+    all_suggestions = multi_gw_transfers(
+        squad,
+        pool,
+        gw_projs,
+        bank=bank,
+        horizon=horizon,
+        sell_prices=sell_prices,
+        club_max=club_max,
+        min_in_chance=min_in_chance,
+    )
+    by_out = {int(s["player"]["id"]): s for s in all_suggestions}
+
+    out = []
+    for p in squad:
+        av = availability(p)
+        if av["status"] == "a" and av["pct"] >= 100:
+            continue
+
+        suggestion = by_out.get(int(p["id"]))
+        rep = suggestion["reps"][0] if suggestion and suggestion.get("reps") else None
+        rep_av = availability(rep) if rep else None
+        gain = float(suggestion["gain"]) if suggestion else 0.0
+
+        if rep:
+            action = av["action"]
+        else:
+            action = "TIDAK ADA OPSI" if av["pct"] <= 0 else "PANTAU"
+
+        out.append({
+            "player": p,
+            "availability": av,
+            "replacement": rep,
+            "replacement_availability": rep_av,
+            "gain": round(gain, 2),
+            "player_total": round(float(suggestion["player_total"]), 2) if suggestion else round(multi_gw_value(p, gw_projs, horizon), 2),
+            "replacement_total": round(float(rep["proj_total"]), 2) if rep else None,
+            "availability_gain": round(rep_av["pct"] - av["pct"], 1) if rep_av else None,
+            "action": action,
+        })
+
+    out.sort(key=lambda s: (s["availability"]["severity"], s["gain"]), reverse=True)
+    return out
 
 
 def hit_calculator(current_player, replacement, gw_projs, horizon=3):
@@ -182,7 +288,7 @@ def differential_picks(players, ownership_threshold=5.0, min_proj=2.0, n=15):
             continue
         if p["selected_by"] >= ownership_threshold:
             continue
-        if p.get("status") in ("i", "u", "n"):
+        if availability(p)["is_out"]:
             continue
         # Differential value = projection / sqrt(ownership + 0.1)
         # Lower ownership + higher projection = better differential

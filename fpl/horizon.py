@@ -1,5 +1,6 @@
 import pandas as pd
 
+from .availability import chance_factor
 from .optimizer import best_xi
 from .utils import (
     BONUS_BASELINE,
@@ -47,15 +48,9 @@ def future_proj(row, gd, event_id, steps_ahead=1):
     weights = _weights() or {}
     w_get = lambda k, d: (weights.get(k, d) if weights else d)  # noqa: E731
 
-    # --- Playing chance ---
-    chance = row.get("chance")
-    if chance is None or pd.isna(chance):
-        chance = 1.0
-    else:
-        chance = max(float(chance) / 100.0, 0.0)
+    # --- Playing chance (single source of truth: availability.py) ---
+    chance = chance_factor(row, "next")
     if chance <= 0:
-        return None
-    if row.get("status") in ("i", "u", "n") and chance < 0.5:
         return None
 
     # --- Early-season form confidence (mirrors model.py v3) ---

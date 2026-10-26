@@ -1,0 +1,16 @@
+{
+  "name": "fpl-lineup-builder-component",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Drag-and-drop pitch lineup builder for the FPL Streamlit dashboard",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "sortablejs": "^1.15.7",
+    "streamlit-component-lib": "^2.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

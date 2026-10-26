@@ -1,5 +1,6 @@
 import pandas as pd
 
+from .availability import chance_factor
 from .utils import (
     BONUS_BASELINE,
     CREATIVITY_NORM_FACTOR,
@@ -111,15 +112,12 @@ def project_player(player, fixtures, gd, weights=None, dc=None, exp_minutes=None
     if not fixtures:
         return None
 
-    # --- Playing chance ---
-    chance = player.get("chance")
-    if chance is None:
-        chance = 1.0
-    else:
-        chance = max(float(chance) / 100.0, 0.0)
+    # --- Playing chance (single source of truth: availability.py) ---
+    # Injured/suspended/unavailable players are never projected, even when
+    # FPL omits the chance field. Doubtful players without a percentage are
+    # treated as 75% likely to play.
+    chance = chance_factor(player, "next")
     if chance <= 0:
-        return None
-    if player.get("status") in ("i", "u", "n") and chance < 0.5:
         return None
 
     pos = player.get("pos", "MID")
@@ -324,7 +322,9 @@ def project_player(player, fixtures, gd, weights=None, dc=None, exp_minutes=None
         "dc_bonus": round(dc_bonus, 3),
         "minutes_factor": round(minutes_factor, 2),
         # Keep raw chance semantics (None/percent 0-100) — consumers convert.
-        "chance": player.get("chance"),
+        "chance": player.get("chance_next", player.get("chance")),
+        "chance_this": player.get("chance_this"),
+        "chance_next": player.get("chance_next", player.get("chance")),
         "is_home": primary["is_home"],
         "fdr": primary["fdr"],
         "opponent": primary["opponent"],
@@ -413,7 +413,9 @@ def build_projection_table(gd, use_tuned_weights=True):
                     "dc_prob": 0.0,
                     "dc_bonus": 0.0,
                     "minutes_factor": 0.0,
-                    "chance": p["chance"],
+                    "chance": p.get("chance"),
+                    "chance_this": p.get("chance_this"),
+                    "chance_next": p.get("chance_next", p.get("chance")),
                     "is_home": None,
                     "fdr": None,
                     "opponent_short": None,

@@ -44,6 +44,7 @@ STATUS_LABELS = {
     "a": "Tersedia",
     "d": "Diragukan",
     "i": "Cedera",
+    "s": "Suspended",
     "u": "Tidak Tersedia",
     "n": "Tidak Masuk Skuad",
 }

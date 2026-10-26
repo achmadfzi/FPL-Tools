@@ -1,6 +1,7 @@
 from collections import Counter
 from itertools import combinations
 
+from .availability import availability, chance_factor, chance_pct
 from .utils import STATUS_LABELS, fmt_price, fdr_badge, home_away_badge, pos_badge, status_badge
 
 FORMATIONS = []
@@ -93,17 +94,7 @@ def ordered_bench(bench):
             nailed_factor = 0.8
 
         # Also boost players with high chance of playing
-        chance = p.get("chance")
-        if chance is not None:
-            try:
-                chance_val = float(chance)
-                if chance_val <= 1.0:
-                    chance_val *= 100.0
-                chance_factor = max(chance_val / 100.0, 0.0)
-            except (TypeError, ValueError):
-                chance_factor = 1.0
-        else:
-            chance_factor = 1.0
+        chance_factor = availability(p)["pct"] / 100.0
 
         return proj * nailed_factor * chance_factor
 
@@ -129,26 +120,23 @@ def rotation_risk(squad, threshold=75):
         reasons = []
         mps = p.get("minutes_per_start", 0)
         starts = p.get("starts", 0)
-        chance = p.get("chance")
-        status = p.get("status", "a")
+        av = availability(p)
 
         # Only flag rotation if we have enough data (at least 1 start)
         if starts > 0 and mps > 0 and mps < threshold:
             reasons.append(f"rata-rata {mps:.0f} mnt/start (risiko rotasi)")
 
-        if status == "d":
-            reasons.append("status: diragukan")
+        if av["status"] in ("d", "s"):
+            reasons.append(f"status: {av['status_label'].lower()}")
 
-        if chance is not None:
-            chance_val = float(chance)
-            if chance_val < 75:
-                reasons.append(f"peluang main {chance_val:.0f}%")
+        if av["pct"] < 75:
+            reasons.append(f"peluang main {av['pct']:.0f}%")
 
         if reasons:
             risks.append({
                 "player": p,
                 "reasons": reasons,
-                "severity": "high" if len(reasons) >= 2 or (chance is not None and float(chance) < 50) else "medium",
+                "severity": "high" if len(reasons) >= 2 or av["pct"] < 50 else "medium",
             })
 
     risks.sort(key=lambda r: (0 if r["severity"] == "high" else 1, r["player"].get("proj", 0)))
@@ -157,7 +145,10 @@ def rotation_risk(squad, threshold=75):
 
 def suggest_transfers(squad, pool, bank):
     squad_ids = {p["id"] for p in squad}
-    by_pos = {pos: [p for p in pool if p["pos"] == pos and p["proj"] > 0] for pos in ("GK", "DEF", "MID", "FWD")}
+    by_pos = {
+        pos: [p for p in pool if p["pos"] == pos and p.get("proj", 0) > 0 and chance_factor(p) > 0]
+        for pos in ("GK", "DEF", "MID", "FWD")
+    }
     candidates = []
     for p in squad:
         budget = p["price"] + bank + 0.5
@@ -193,10 +184,8 @@ def value_picks(players, n=15):
 def risk_players(players, n=15):
     risky = []
     for p in players:
-        chance = p.get("chance")
-        if chance is not None and float(chance) < 50:
-            risky.append(p)
-        elif p.get("status") in ("i", "u", "n", "d") and p["selected_by"] >= 1:
+        av = availability(p)
+        if av["pct"] < 50 or (av["status"] in ("i", "u", "n", "s", "d") and p["selected_by"] >= 1):
             risky.append(p)
     risky.sort(key=lambda p: p["selected_by"], reverse=True)
     return risky[:n]
@@ -214,17 +203,7 @@ def player_display(p):
 
 def _chance_pct(p):
     """Chance as percent 0-100 (handles raw percent or 0-1 fraction)."""
-    c = p.get("chance")
-    if c is None:
-        return None
-    try:
-        c = float(c)
-    except (TypeError, ValueError):
-        return None
-    import math
-    if math.isnan(c):
-        return None
-    return c if c > 1 else c * 100.0
+    return chance_pct(p.get("chance_next", p.get("chance")))
 
 
 def fixture_line(p):

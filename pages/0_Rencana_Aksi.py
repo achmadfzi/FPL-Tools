@@ -10,6 +10,7 @@ import time
 import pandas as pd
 import streamlit as st
 
+from fpl.availability import availability
 from fpl.ui import apply_theme, autorefresh, countdown_html, load_data
 from fpl.utils import fmt_deadline_wib, fmt_price
 
@@ -253,8 +254,12 @@ for step in plan["plan"]:
     for t in step["transfers"]:
         rows.append({
             "Keluar": t["out_name"],
+            "Status keluar": t.get("out_status", "-"),
+            "Peluang keluar": f"{t['out_chance']:.0f}%" if t.get("out_chance") is not None else "-",
             "Harga jual": fmt_price(t["out_price"]),
             "Masuk": t["in_name"],
+            "Status masuk": t.get("in_status", "-"),
+            "Peluang masuk": f"{t['in_chance']:.0f}%" if t.get("in_chance") is not None else "-",
             "Harga": fmt_price(t["in_price"]),
             "Gain horizon": t.get("gain_horizon"),
         })
@@ -321,24 +326,35 @@ else:
 # ---------------------------------------------------------------------------
 st.markdown('<div class="section" style="font-size:1rem">⚠️ <em>Peringatan</em> Skuad</div>', unsafe_allow_html=True)
 squad_set = set(state["squad_ids"])
+recommended_out = {}
+for step in plan.get("plan", []):
+    for t in step.get("transfers", []):
+        key = t.get("out_id") or t.get("out_name")
+        recommended_out[key] = f"{t.get('in_name')} (GW {step.get('gw')})"
+
 alerts = []
 for r in df.to_dict("records"):
     pid = int(r["id"])
     if pid not in squad_set:
         continue
     name = r.get("web_name")
-    chance = r.get("chance")
-    status = r.get("status", "a")
-    news = (r.get("news") or "").strip()
-    if status in ("d", "i", "u", "n") or (chance is not None and not pd.isna(chance) and float(chance) < 100):
-        alerts.append({
-            "Pemain": name,
-            "Status": {"a": "Tersedia", "d": "Diragukan", "i": "Cedera", "u": "Tidak tersedia", "n": "Tidak masuk skuad"}.get(status, status),
-            "Peluang main": f"{float(chance):.0f}%" if chance is not None and not pd.isna(chance) else "-",
-            "Kabar": news[:90] if news else "-",
-        })
+    av = availability(r)
+    if av["status"] == "a" and av["pct"] >= 100:
+        continue
+    kabar = av["news"] or "-"
+    if av["return_text"]:
+        kabar = f"{kabar} · kembali: {av['return_text']}"
+    alerts.append({
+        "Pemain": name,
+        "Status": av["status_label"],
+        "Peluang GW ini": f"{av['this_pct']:.0f}%",
+        "Peluang GW depan": f"{av['next_pct']:.0f}%",
+        "Kabar": kabar[:90],
+        "Saran transfer": recommended_out.get(pid, recommended_out.get(name, "Belum ada opsi lebih baik")),
+    })
 if alerts:
     st.dataframe(pd.DataFrame(alerts), use_container_width=True, hide_index=True)
+    st.caption("Saran transfer berasal dari rencana multi-GW di atas; pemain masuk dengan peluang 0% sudah difilter.")
 else:
     st.success("Tidak ada pemain skuad dengan status diragukan/cedera. Aman!")
 

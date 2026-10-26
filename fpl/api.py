@@ -274,7 +274,12 @@ class GameData:
                     "status": p.get("status") or "a",
                     "news": p.get("news") or "",
                     "ep_next": float(p.get("ep_next") or 0),
+                    # Chance of playing: official FPL percentages (0-100).
+                    # "chance" is kept as an alias of next-round for older
+                    # modules; new code should use chance_this/chance_next.
                     "chance": p.get("chance_of_playing_next_round"),
+                    "chance_this": p.get("chance_of_playing_this_round"),
+                    "chance_next": p.get("chance_of_playing_next_round"),
                     "xGI": xgi,
                     "xGI_per90": xgi_per90,
                     "xG": float(p.get("expected_goals") or 0),

@@ -1,7 +1,17 @@
+import pandas as pd
 import streamlit as st
 
+from fpl.availability import availability
 from fpl.optimizer import overpriced_players, projection_explanation, risk_players, value_picks
-from fpl.ui import apply_theme, autorefresh, esc, fdr_badge_html, load_data, player_card_html, pos_badge_html
+from fpl.ui import (
+    apply_theme,
+    autorefresh,
+    esc,
+    load_data,
+    player_card_html,
+    pos_badge_html,
+    transfer_card_html,
+)
 from fpl.utils import fmt_price
 
 st.set_page_config(page_title="Kapten & Transfer", layout="wide")
@@ -194,11 +204,11 @@ with c1:
     risky = risk_players(players)
     if risky:
         for p in risky[:8]:
-            chance = p.get("chance")
-            peluang = f"{float(chance):.0f}%" if chance is not None else "?"
+            av = availability(p)
             st.markdown(
                 f"<div class='info-line'><span style='color:#dc2626;font-weight:500'>{esc(p['web_name'])}</span> "
-                f"<span style='color:#64748b'>({esc(p['team_short'])}) · {p['selected_by']:.1f}% kepemilikan · peluang {peluang}</span></div>",
+                f"<span style='color:#64748b'>({esc(p['team_short'])}) · {p['selected_by']:.1f}% kepemilikan · "
+                f"{esc(av['label'])}</span></div>",
                 unsafe_allow_html=True,
             )
             if p["news"]:
@@ -219,6 +229,125 @@ with c2:
     else:
         st.info("Tidak ada pemain yang mencolok.")
     st.markdown("</div>", unsafe_allow_html=True)
+
+# --- Transfer recommendations driven by injury / availability ---
+st.markdown('<div class="section">🚑 Transfer karena <em>Cedera & Peluang Main</em></div>', unsafe_allow_html=True)
+st.caption(
+    "Menggabungkan status cedera, kabar resmi FPL, peluang main GW ini & GW depan, "
+    "dan gain proyeksi 3 GW. Pemain masuk dengan peluang 0% tidak akan disarankan."
+)
+
+from fpl.horizon import player_gw_projections
+from fpl.planner import manager_state
+from fpl.simulator import load_saved_squad, reference_xi
+from fpl.transfer import hit_calculator, injury_transfer_suggestions
+
+gw_id = int(gd.next_event["id"])
+state = manager_state(df, current_gw=gw_id)
+if state:
+    squad_rows = state["squad_rows"]
+    bank_tenths = int(state["bank"])
+    sell_prices = state["sell_prices"]
+    source = f"Tim FPL {state.get('team_name') or state.get('team_id')} · FT {state.get('free_transfers')}"
+else:
+    squad_rows, _xi_ids, src = load_saved_squad(df)
+    bank_tenths = 0
+    sell_prices = {}
+    source = src
+    if squad_rows is None:
+        squad_rows = reference_xi(df)
+        source = "XI referensi (belum ada skuad 15 tersimpan — simpan skuad di Team Builder)"
+st.caption(f"Sumber skuad: {source}.")
+
+min_chance = st.slider(
+    "Peluang main minimum untuk pemain masuk",
+    min_value=0,
+    max_value=100,
+    value=0,
+    step=25,
+    help="0% = hanya menolak pemain yang tidak tersedia. Naikkan ke 75% untuk menghindari pemain diragukan.",
+)
+
+with st.spinner("Menghitung rekomendasi transfer berbasis cedera..."):
+    gw_projs = player_gw_projections(df, gd, horizon=3)
+    injury_suggestions = injury_transfer_suggestions(
+        squad_rows,
+        players,
+        gw_projs,
+        bank=bank_tenths,
+        horizon=3,
+        sell_prices=sell_prices,
+        min_in_chance=min_chance,
+    )
+
+if not injury_suggestions:
+    st.success("Tidak ada pemain skuad dengan status cedera/diragukan. Tidak ada transfer darurat.")
+else:
+    for s in injury_suggestions:
+        out = s["player"]
+        av = s["availability"]
+        rep = s["replacement"]
+        action_color = "#dc2626" if av["pct"] <= 0 else "#d97706"
+        extra = (
+            f"<span class='fdr-badge' style='background:{action_color};color:#fff'>"
+            f"{esc(s['action'])}</span>"
+            f"<span style='font-size:.72rem;color:#64748b'>"
+            f"Peluang main: GW ini {av['this_pct']:.0f}% · GW depan {av['next_pct']:.0f}%</span>"
+        )
+        if rep:
+            hit = hit_calculator(out, rep, gw_projs, horizon=3)
+            net = hit["net_after_hit"]
+            net_color = "#16a34a" if net > 0 else "#dc2626"
+            extra += (
+                f"<span class='fdr-badge' style='background:{net_color};color:#fff'>"
+                f"Net jika hit −4: {net:+.1f}</span>"
+            )
+        st.html(
+            transfer_card_html(
+                out,
+                rep,
+                s["player_total"],
+                s["replacement_total"] or 0,
+                s["gain"],
+                extra_badges=extra,
+            )
+        )
+    st.caption(
+        "**JUAL SEKARANG** = peluang main 0%. **PANTAU** = peluang main di bawah 100% / diragukan. "
+        "Gain dihitung dari proyeksi 3 GW yang sudah dikalikan peluang main; badge hit hanya berlaku "
+        "jika transfer memakai hit −4."
+    )
+
+with st.expander("Lihat semua pemain cedera / diragukan / suspended"):
+    risk_rows = []
+    for p in players:
+        av = availability(p)
+        if av["status"] == "a" and av["pct"] >= 100:
+            continue
+        kabar = av["news"] or "-"
+        if av["return_text"]:
+            kabar = f"{kabar} · kembali: {av['return_text']}"
+        risk_rows.append({
+            "Pemain": p["web_name"],
+            "Tim": p["team_short"],
+            "Status": av["status_label"],
+            "Peluang GW ini": f"{av['this_pct']:.0f}%",
+            "Peluang GW depan": f"{av['next_pct']:.0f}%",
+            "Kabar": kabar[:110],
+            "Kepemilikan": p["selected_by"],
+            "_own": p["selected_by"],
+        })
+    if risk_rows:
+        risk_df = (
+            pd.DataFrame(risk_rows)
+            .sort_values("_own", ascending=False)
+            .drop(columns=["_own"])
+            .head(40)
+        )
+        st.dataframe(risk_df, use_container_width=True, hide_index=True)
+        st.caption("Diurutkan berdasarkan kepemilikan. Sumber: bootstrap-static FPL (status, news, chance_of_playing).")
+    else:
+        st.success("Tidak ada pemain berstatus cedera/diragukan/suspended.")
 
 st.markdown('<div class="section">Acuan <em>Musim Lalu</em> (2025/26)</div>', unsafe_allow_html=True)
 st.caption("Pemain dengan poin tertinggi musim lalu sebagai acuan — dipasangkan dengan proyeksi GW ini dan harga sekarang.")
