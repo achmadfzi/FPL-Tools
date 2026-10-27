@@ -6,6 +6,7 @@ data/squad.json
 data/reliability.json
 data/paststats.json
 data/accuracy.json
+data/recommendations.json
 data/gw_history_cache.json
 data/recommended_squad.json
 data/tuned_weights.json
@@ -15,3 +16,6 @@ data/ml_model_meta.json
 data/player_history.json
 data/defcon.json
 data/calibration.json
+data/scout_selection.json
+data/snapshots/
+web/dist/
