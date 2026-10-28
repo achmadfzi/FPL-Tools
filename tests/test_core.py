@@ -11,7 +11,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fpl import availability, calibration, defcon, lineup, optimizer, planner, squad_builder, transfer  # noqa: E402
+from fpl import availability, calibration, defcon, lineup, optimizer, planner, scout, squad_builder, transfer  # noqa: E402
 from fpl.simulator import autosub_points, _lineup_candidates  # noqa: E402
 
 
@@ -405,6 +405,113 @@ def test_lineup_component_value_normalization():
     assert payload["proj"] == 0.0
     assert payload["gw"][0]["pts"] == 0.0
     json.dumps([payload], allow_nan=False)
+
+
+# ---------------------------------------------------------------------------
+# Official Scout Selection parsing
+# ---------------------------------------------------------------------------
+
+
+def _scout_fixture():
+    specs = [
+        ("Caoimhin Kelleher", "Brentford", "GK", 50, 1),
+        ("Riccardo Calafiori", "Arsenal", "DEF", 60, 2),
+        ("Murillo", "Nottingham Forest", "DEF", 55, 3),
+        ("Tarik Muharemovic", "Leeds", "DEF", 50, 4),
+        ("Cole Palmer", "Chelsea", "MID", 97, 5),
+        ("Morgan Gibbs-White", "Nottingham Forest", "MID", 79, 6),
+        ("Martin Odegaard", "Arsenal", "MID", 68, 7),
+        ("Marcus Tavernier", "Bournemouth", "MID", 62, 8),
+        ("Erling Haaland", "Man City", "FWD", 157, 9),
+        ("João Pedro", "Chelsea", "FWD", 79, 10),
+        ("Igor Thiago", "Brentford", "FWD", 78, 11),
+    ]
+    team_map = {
+        "brentford": "BRE", "arsenal": "ARS", "nottingham forest": "NFO",
+        "leeds": "LEE", "chelsea": "CHE", "man city": "MCI",
+        "bournemouth": "BOU",
+    }
+    by_id = {}
+    index = []
+    for name, team, pos, price, pid in specs:
+        teams = {
+            "Brentford": "BRE", "Arsenal": "ARS", "Nottingham Forest": "NFO",
+            "Leeds": "LEE", "Chelsea": "CHE", "Man City": "MCI",
+            "Bournemouth": "BOU",
+        }
+        p = {
+            "id": pid, "name": name, "pos": pos, "team": teams[team],
+            "team_name": team, "price": price,
+            "aliases": [name], "norm_aliases": [scout._norm(name)],
+            "proj": 5.0,
+        }
+        index.append(p)
+        by_id[pid] = p
+    body = "".join(
+        f"<h5>{name.replace('João', 'Joao')} ({team}) £{price/10:.1f}m</h5>"
+        for name, team, _pos, price, _pid in specs
+    )
+    body += (
+        "<p>Erling Haaland is named as captain for Manchester City, "
+        "with João Pedro given the vice-captaincy.</p>"
+    )
+    return body, index, team_map, by_id
+
+
+def test_scout_parser_maps_names_and_captain():
+    body, index, team_map, by_id = _scout_fixture()
+    selection = scout.parse_article_body(
+        body,
+        "Scout Selection: Best Fantasy team for Gameweek 9",
+        "2026-10-29T10:00:00Z",
+        "https://example.com/scout",
+        index,
+        team_map,
+    )
+    assert selection["gw"] == 9
+    assert selection["formation"] == "3-4-3"
+    assert len(selection["players"]) == 11
+    assert selection["unresolved"] == []
+    assert selection["captain_id"] == 9
+    assert selection["vice_id"] == 10
+    assert selection["type"] == "xi"
+    names = {p["raw_name"]: p["name"] for p in selection["players"]}
+    assert names["Joao Pedro"] == "João Pedro"
+
+
+def test_scout_compare_reports_overlap_and_captain():
+    body, index, team_map, by_id = _scout_fixture()
+    selection = scout.parse_article_body(
+        body,
+        "Scout Selection: Best Fantasy team for Gameweek 9",
+        "2026-10-29T10:00:00Z",
+        "https://example.com/scout",
+        index,
+        team_map,
+    )
+    xi_ids = list(range(1, 12))
+    comp = scout.compare_selection(
+        selection,
+        xi_ids,
+        by_id,
+        captain_id=9,
+        squad_ids=xi_ids,
+    )
+    assert comp["overlap_count"] == 11
+    assert comp["agreement_pct"] == 100.0
+    assert comp["captain_match"] is True
+    assert comp["only_scout_ids"] == []
+    assert comp["not_owned_ids"] == []
+
+    partial = scout.compare_selection(
+        selection,
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        by_id,
+        captain_id=9,
+        squad_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    )
+    assert partial["overlap_count"] == 10
+    assert partial["only_scout_ids"] == [11]
 
 
 # ---------------------------------------------------------------------------
