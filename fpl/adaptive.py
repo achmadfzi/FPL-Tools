@@ -4,6 +4,7 @@ Uses historical projection vs actual data to find optimal model weights
 that minimize prediction error (MAE).
 """
 
+import copy
 import json
 import math
 from itertools import product
@@ -12,6 +13,12 @@ from pathlib import Path
 from .api import DATA_DIR
 
 WEIGHTS_FILE = DATA_DIR / "tuned_weights.json"
+
+# Guard-rails: do not let a tiny sample or a negative out-of-sample result
+# silently replace the hand-tuned defaults.
+MIN_TUNING_SAMPLES = 120
+MIN_VALIDATION_SAMPLES = 40
+MIN_IMPROVEMENT_PCT = 0.5
 
 # Default weights (from model.py)
 DEFAULT_WEIGHTS = {
@@ -59,12 +66,44 @@ def save_tuned_weights(weights, metrics):
     return data
 
 
+def _merge_weights(base, override):
+    """Recursively merge a partial weight dict into the defaults.
+
+    Older tuned files omitted position-specific keys (e.g. ``cs_weight_gk``)
+    and ``dc_weight``.  Returning the partial dict made those players fall
+    back to the wrong CS weight.  Deep-merging fixes that class of bug.
+    """
+    out = copy.deepcopy(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge_weights(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
 def get_active_weights():
-    """Get the currently active weights (tuned if available and enabled, else default)."""
+    """Get active weights, with validation guard-rails and default merging."""
     tuned = load_tuned_weights()
-    if tuned and tuned.get("weights") and tuned.get("metrics", {}).get("enabled"):
-        return tuned["weights"]
-    return DEFAULT_WEIGHTS.copy()
+    if not tuned or not tuned.get("weights"):
+        return copy.deepcopy(DEFAULT_WEIGHTS)
+
+    metrics = tuned.get("metrics") or {}
+    if not metrics.get("enabled"):
+        return copy.deepcopy(DEFAULT_WEIGHTS)
+
+    n = int(metrics.get("n_samples") or 0)
+    improvement = metrics.get("improvement_pct")
+    validation = metrics.get("validation_improvement_pct")
+
+    if n < MIN_TUNING_SAMPLES:
+        return copy.deepcopy(DEFAULT_WEIGHTS)
+    if improvement is not None and float(improvement) <= 0:
+        return copy.deepcopy(DEFAULT_WEIGHTS)
+    if validation is not None and float(validation) <= 0:
+        return copy.deepcopy(DEFAULT_WEIGHTS)
+
+    return _merge_weights(DEFAULT_WEIGHTS, tuned["weights"])
 
 
 def _build_training_data():
@@ -91,14 +130,19 @@ def _build_training_data():
             if pid not in actuals:
                 continue
             actual = actuals[pid]
-            samples.append({
+            sample = {
                 "pid": pid,
                 "gw": key,
                 "proj": proj_info["proj"],
                 "pos": proj_info.get("pos", "MID"),
                 "fdr": proj_info.get("fdr"),
                 "actual": actual,
-            })
+            }
+            for key_name in ("own", "own_total", "ep_next", "form", "ppg",
+                             "xgi_sig", "ict_sig", "cs_prob", "dc_bonus"):
+                if proj_info.get(key_name) is not None:
+                    sample[key_name] = proj_info.get(key_name)
+            samples.append(sample)
 
     return samples
 
@@ -128,18 +172,34 @@ def _simulate_projection(features, weights):
     else:
         fdr_ratio = 1.0
 
-    # Scale blend weights
+    # Re-blend only when the historical snapshot actually contains the raw
+    # components.  Earlier accuracy files only stored the final projection;
+    # scaling by the blend-weight ratio there would be a fake "tuning" that
+    # just shrinks every prediction.
     default_own = DEFAULT_WEIGHTS["own_w"]
     default_ep = DEFAULT_WEIGHTS["ep_w"]
+    default_safety = DEFAULT_WEIGHTS["safety_w"]
     new_own = weights.get("own_w", default_own)
     new_ep = weights.get("ep_w", default_ep)
+    new_safety = weights.get("safety_w", default_safety)
 
-    # Approximate: original projection was made with default blend
-    # Reblend using new weights (simplified)
-    blend_ratio = (new_own + new_ep) / (default_own + default_ep) if (default_own + default_ep) > 0 else 1.0
+    own = features.get("own_total")
+    if own is None:
+        own = features.get("own")
+    ep = features.get("ep_next")
+    if own is not None and ep is not None:
+        try:
+            own = float(own)
+            ep = float(ep)
+            base_default = default_own * own + default_ep * ep + default_safety * ep
+            base_new = new_own * own + new_ep * ep + new_safety * ep
+            blend_ratio = base_new / base_default if base_default > 0 else 1.0
+            adjusted = orig_proj * fdr_ratio * blend_ratio
+            return round(max(0.0, adjusted), 2)
+        except (TypeError, ValueError):
+            pass
 
-    adjusted = orig_proj * fdr_ratio * blend_ratio
-    return round(adjusted, 2)
+    return round(max(0.0, orig_proj * fdr_ratio), 2)
 
 
 def optimize_weights(progress_callback=None):
@@ -159,19 +219,30 @@ def optimize_weights(progress_callback=None):
             "n_samples": len(samples),
         }
 
+    # Use the most recent Gameweeks as a true holdout.  Grid-searching on the
+    # same rows that we report would almost always "improve" and then fail.
+    gws = sorted({s["gw"] for s in samples})
+    validation_gws = set(gws[-2:]) if len(gws) >= 4 else set()
+    train = [s for s in samples if s["gw"] not in validation_gws] or samples
+    valid = [s for s in samples if s["gw"] in validation_gws]
+
     # Grid search parameters
     fdr_easy_range = [1.08, 1.10, 1.12, 1.14, 1.16]
     fdr_hard_range = [0.80, 0.83, 0.85, 0.88, 0.90]
     own_w_range = [0.55, 0.60, 0.65, 0.70, 0.75]
     ep_w_range = [0.15, 0.20, 0.25, 0.30]
 
-    # Compute default MAE first
-    default_errors = [abs(s["actual"] - s["proj"]) for s in samples]
-    default_mae = sum(default_errors) / len(default_errors)
-    default_rmse = math.sqrt(sum(e ** 2 for e in default_errors) / len(default_errors))
+    def _mae(rows, weights):
+        errs = [abs(s["actual"] - _simulate_projection(s, weights)) for s in rows]
+        return sum(errs) / len(errs) if errs else None
+
+    default_mae = _mae(train, DEFAULT_WEIGHTS)
+    default_rmse = math.sqrt(
+        sum((s["actual"] - s["proj"]) ** 2 for s in train) / len(train)
+    )
 
     best_mae = default_mae
-    best_weights = DEFAULT_WEIGHTS.copy()
+    best_weights = copy.deepcopy(DEFAULT_WEIGHTS)
     total_combos = len(fdr_easy_range) * len(fdr_hard_range) * len(own_w_range) * len(ep_w_range)
     tested = 0
 
@@ -182,7 +253,7 @@ def optimize_weights(progress_callback=None):
         if safety_w < 0:
             continue
 
-        test_weights = DEFAULT_WEIGHTS.copy()
+        test_weights = copy.deepcopy(DEFAULT_WEIGHTS)
         test_weights["fdr_mult"] = {
             1: round(fdr_easy, 2),
             2: round(1.0 + (fdr_easy - 1.0) * 0.5, 2),
@@ -194,17 +265,11 @@ def optimize_weights(progress_callback=None):
         test_weights["ep_w"] = ep_w
         test_weights["safety_w"] = round(safety_w, 2)
 
-        # Evaluate
-        errors = []
-        for s in samples:
-            simulated = _simulate_projection(s, test_weights)
-            errors.append(abs(s["actual"] - simulated))
+        mae = _mae(train, test_weights)
 
-        mae = sum(errors) / len(errors)
-
-        if mae < best_mae:
+        if mae is not None and mae < best_mae:
             best_mae = mae
-            best_weights = test_weights.copy()
+            best_weights = test_weights
 
         tested += 1
         if progress_callback and tested % 100 == 0:
@@ -213,25 +278,49 @@ def optimize_weights(progress_callback=None):
     if progress_callback:
         progress_callback(1.0)
 
-    # Compute tuned RMSE
-    tuned_errors = []
-    for s in samples:
-        simulated = _simulate_projection(s, best_weights)
-        tuned_errors.append(abs(s["actual"] - simulated))
-    tuned_mae = sum(tuned_errors) / len(tuned_errors)
-    tuned_rmse = math.sqrt(sum(e ** 2 for e in tuned_errors) / len(tuned_errors))
+    tuned_mae = _mae(train, best_weights)
+    tuned_rmse = math.sqrt(
+        sum((s["actual"] - _simulate_projection(s, best_weights)) ** 2 for s in train)
+        / len(train)
+    )
+    improvement = round((default_mae - tuned_mae) / default_mae * 100, 1) if default_mae else 0.0
 
-    improvement = round((default_mae - tuned_mae) / default_mae * 100, 1)
+    # Out-of-sample check: only allow activation when the recent holdout
+    # actually improves.  This is intentionally conservative.
+    validation_default = _mae(valid, DEFAULT_WEIGHTS) if valid else None
+    validation_tuned = _mae(valid, best_weights) if valid else None
+    validation_improvement = None
+    if validation_default and validation_tuned is not None:
+        validation_improvement = round(
+            (validation_default - validation_tuned) / validation_default * 100, 2
+        )
+
+    enabled = bool(
+        len(samples) >= MIN_TUNING_SAMPLES
+        and (not valid or len(valid) >= MIN_VALIDATION_SAMPLES)
+        and (
+            validation_improvement is not None
+            and validation_improvement >= MIN_IMPROVEMENT_PCT
+            or (validation_improvement is None and improvement >= MIN_IMPROVEMENT_PCT)
+        )
+    )
 
     result = {
         "status": "ok",
         "n_samples": len(samples),
+        "n_train": len(train),
+        "n_validation": len(valid),
         "n_combos_tested": tested,
         "default_mae": round(default_mae, 3),
         "default_rmse": round(default_rmse, 3),
         "tuned_mae": round(tuned_mae, 3),
         "tuned_rmse": round(tuned_rmse, 3),
         "improvement_pct": improvement,
+        "validation_default_mae": round(validation_default, 3) if validation_default else None,
+        "validation_tuned_mae": round(validation_tuned, 3) if validation_tuned else None,
+        "validation_improvement_pct": validation_improvement,
+        "min_improvement_pct": MIN_IMPROVEMENT_PCT,
+        "enabled": enabled,
         "weights": best_weights,
     }
 

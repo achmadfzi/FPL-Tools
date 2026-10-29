@@ -16,6 +16,8 @@ degrades gracefully to FDR-only behaviour on missing data.
 
 import math
 
+import numpy as np
+
 
 # Weight of actuals: w = played / (played + SMOOTH_K). Small k = more responsive.
 SMOOTH_K = 1.5
@@ -26,10 +28,103 @@ MAX_ACTUAL_W = 0.75
 # contribute at all.
 MIN_MATCHES = 2
 
+# How much of the CS signal may come from the dynamic team indices.  A
+# walk-forward check on 2026/27 GW3-8 showed the dynamic CS model was worse
+# than the simple FDR prior (Brier 0.222 vs 0.208); a small weight keeps the
+# signal without letting it dominate the prior until it proves out-of-sample.
+CS_DYNAMIC_WEIGHT = 0.25
+
 # Exponent applied to the scoring ratio for the fixture multiplier.
 # ratio 1.5  -> dyn ~1.15 ; ratio 0.66 -> dyn ~0.87
 MULT_EXP = 0.35
 DYN_CLAMP = (0.80, 1.20)
+
+
+def _fit_poisson_indices(finished, team_ids):
+    """Fit a small opponent-adjusted Poisson model to finished matches.
+
+    Goals are noisy, but a plain goals-for/goals-against ratio attributes a
+    team's goals partly to the opponent.  This model estimates attack and
+    defence effects jointly with home advantage and L2 shrinkage:
+
+        log E[goals_home] = mu + home_adv + att_home + def_away
+        log E[goals_away] = mu + att_away + def_home
+
+    ``def`` is positive for a *worse* defence (more goals conceded), matching
+    the existing ``gc`` index convention.  Returns ``None`` when there is not
+    enough data or scipy is unavailable.
+    """
+    n = len(finished)
+    if n < 8 or len(team_ids) < 4:
+        return None
+    try:
+        from scipy.optimize import minimize
+    except Exception:
+        return None
+
+    teams = list(team_ids)
+    idx = {tid: i for i, tid in enumerate(teams)}
+    m = len(teams)
+    # Parameters: att[m], def[m], home_adv, intercept
+    x0 = np.zeros(2 * m + 2)
+    x0[-2] = 0.15  # home advantage
+    total_goals = sum(f["team_h_score"] + f["team_a_score"] for f in finished)
+    x0[-1] = math.log(max(1e-6, total_goals / (2.0 * n)))
+
+    def unpack(x):
+        return x[:m], x[m:2 * m], x[-2], x[-1]
+
+    def neg_ll(x):
+        att, dfn, home, mu = unpack(x)
+        ll = 0.0
+        for f in finished:
+            h, a = idx[f["team_h"]], idx[f["team_a"]]
+            lh = math.exp(max(-4.0, min(4.0, mu + home + att[h] + dfn[a])))
+            la = math.exp(max(-4.0, min(4.0, mu + att[a] + dfn[h])))
+            gh, ga = f["team_h_score"], f["team_a_score"]
+            ll += gh * math.log(max(lh, 1e-9)) - lh
+            ll += ga * math.log(max(la, 1e-9)) - la
+        # Ridge keeps early-season estimates from exploding.
+        ridge = 0.35
+        return -ll + ridge * float(np.sum(x[:2 * m] ** 2))
+
+    bounds = [(-1.5, 1.5)] * (2 * m) + [(0.0, 0.6), (-1.5, 1.5)]
+    try:
+        res = minimize(neg_ll, x0, method="L-BFGS-B", bounds=bounds,
+                       options={"maxiter": 300, "ftol": 1e-7})
+    except Exception:
+        return None
+    if not getattr(res, "success", False) or res.x is None:
+        return None
+
+    att_p, def_p, home_adv, mu = unpack(res.x)
+    att = np.exp(att_p)
+    gc = np.exp(def_p)
+    # Centre indices on 1.0 (geometric mean) so multipliers remain
+    # interpretable as "relative to the average team".
+    att = att / max(float(np.exp(np.mean(att_p))), 1e-9)
+    gc = gc / max(float(np.exp(np.mean(def_p))), 1e-9)
+    L_home = math.exp(mu + home_adv)
+    L_away = math.exp(mu)
+
+    out = {}
+    for tid in teams:
+        i = idx[tid]
+        out[tid] = {
+            "att": round(float(att[i]), 4),
+            "gc": round(float(gc[i]), 4),
+            "poisson": True,
+        }
+    return {
+        "teams": out,
+        "meta": {
+            "L_home": round(L_home, 4),
+            "L_away": round(L_away, 4),
+            "L_overall": round((L_home + L_away) / 2.0, 4),
+            "method": "poisson",
+            "home_adv": round(float(home_adv), 4),
+        },
+    }
 
 
 def build_team_indices(gd):
@@ -113,7 +208,27 @@ def build_team_indices(gd):
         "cs_home_rate": round(cs_home_rate, 4),
         "cs_away_rate": round(cs_away_rate, 4),
         "min_matches": MIN_MATCHES,
+        "method": "ratio",
     }
+
+    # Prefer the opponent-adjusted Poisson fit; fall back to the goals ratio
+    # when scipy is missing or the sample is too small.
+    fitted = _fit_poisson_indices(finished, list(teams.keys()))
+    if fitted:
+        for tid, vals in fitted.get("teams", {}).items():
+            if tid in out:
+                out[tid].update(vals)
+                played = acc[tid]["m"]
+                out[tid]["played"] = played
+                out[tid]["w"] = round(
+                    min(MAX_ACTUAL_W, played / (played + SMOOTH_K)) if played else 0.0,
+                    4,
+                )
+        out["_meta"].update(fitted.get("meta", {}))
+        out["_meta"]["n_matches"] = n_matches
+        out["_meta"]["cs_home_rate"] = round(cs_home_rate, 4)
+        out["_meta"]["cs_away_rate"] = round(cs_away_rate, 4)
+        out["_meta"]["min_matches"] = MIN_MATCHES
     return out
 
 
@@ -186,5 +301,5 @@ def cs_probability(gd, indices, team_id, opponent_id, is_home, fdr=None):
     dyn = math.exp(-lam * scale)
     dyn = max(0.05, min(0.60, dyn))
 
-    w = min(float(t.get("w", 0.0)), float(o.get("w", 0.0)))
+    w = min(float(t.get("w", 0.0)), float(o.get("w", 0.0))) * CS_DYNAMIC_WEIGHT
     return round(prior + w * (dyn - prior), 4)

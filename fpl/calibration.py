@@ -93,6 +93,82 @@ def _mae(pairs, a, b):
     return sum(errs) / len(errs)
 
 
+# ---------------------------------------------------------------------------
+# Alternative calibrators
+# ---------------------------------------------------------------------------
+# A global linear map failed out-of-sample (the relationship is non-linear:
+# mid-range projections were under-predicted, the top decile over-predicted).
+# A piecewise "top-end shrink" often helps: values above T are compressed
+# toward T by a factor F.  It is still a simple, monotone map and can be
+# validated leave-one-GW-out.
+
+
+def _apply_shrink_value(proj, t, f):
+    proj = max(0.0, float(proj))
+    if proj <= t:
+        return proj
+    return t + float(f) * (proj - t)
+
+
+def _mae_shrink(pairs, t, f):
+    if not pairs:
+        return None
+    errs = [abs(p["actual"] - _apply_shrink_value(p["proj"], t, f)) for p in pairs]
+    return sum(errs) / len(errs)
+
+
+def _fit_shrink(pairs):
+    """Choose (threshold, factor) on the supplied rows."""
+    if len(pairs) < 20:
+        return None
+    best = None
+    # Keep the shrink moderate.  An unconstrained grid chooses ~0.45x above
+    # 3.0, which minimises MAE (median-like) but destroys captain upside.
+    for t in (4.0, 4.5, 5.0, 5.5, 6.0, 7.0):
+        for f in (0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95):
+            mae = _mae_shrink(pairs, t, f)
+            if mae is not None and (best is None or mae < best[0]):
+                best = (mae, t, f)
+    return (best[1], best[2]) if best else None
+
+
+def _fit_candidate(pairs, method):
+    if method == "linear":
+        return _fit_linear(pairs)
+    if method == "shrink":
+        return _fit_shrink(pairs)
+    return None
+
+
+def _predict(pair, method, params):
+    if params is None:
+        return pair["proj"]
+    if method == "linear":
+        a, b = params
+        return max(0.0, a + b * pair["proj"])
+    if method == "shrink":
+        t, f = params
+        return _apply_shrink_value(pair["proj"], t, f)
+    return pair["proj"]
+
+
+def _cv_mae(samples, gws, method):
+    """Leave-one-GW-out MAE for a candidate calibrator."""
+    errs = []
+    for gw in gws:
+        train = [s for s in samples if s["gw"] != gw]
+        test = [s for s in samples if s["gw"] == gw]
+        if len(train) < 30 or not test:
+            continue
+        params = _fit_candidate(train, method)
+        if params is None:
+            continue
+        errs.extend(abs(s["actual"] - _predict(s, method, params)) for s in test)
+    if not errs:
+        return None
+    return sum(errs) / len(errs)
+
+
 def fit(save=True):
     """Fit calibration on the full history with leave-one-GW-out validation.
 
@@ -113,47 +189,69 @@ def fit(save=True):
             _save(result)
         return result
 
-    glob = _fit_linear(samples)
-    if glob is None:
+    # Leave-one-GW-out: fit every candidate on the rest, evaluate on the
+    # held-out GW.  Raw errors are collected on exactly the same rows.
+    raw_errs = []
+    for gw in gws:
+        test = [s for s in samples if s["gw"] == gw]
+        raw_errs.extend(abs(s["actual"] - s["proj"]) for s in test)
+    raw_mae_cv = sum(raw_errs) / len(raw_errs) if raw_errs else None
+
+    candidate_maes = {}
+    for method in ("linear", "shrink"):
+        mae = _cv_mae(samples, gws, method)
+        if mae is not None:
+            candidate_maes[method] = mae
+
+    if not candidate_maes:
         result = {"enabled": False, "status": "fit_failed", "n": n, "gws": gws}
         if save:
             _save(result)
         return result
 
-    # Leave-one-GW-out: fit on the rest, evaluate on the held-out GW.
-    raw_errs, cal_errs = [], []
-    for gw in gws:
-        train = [s for s in samples if s["gw"] != gw]
-        test = [s for s in samples if s["gw"] == gw]
-        if len(train) < 30 or not test:
-            continue
-        fit_g = _fit_linear(train)
-        if fit_g is None:
-            continue
-        a, b = fit_g
-        raw_errs.extend(abs(t["actual"] - t["proj"]) for t in test)
-        cal_errs.extend(abs(t["actual"] - max(0.0, a + b * t["proj"])) for t in test)
-
-    raw_mae_cv = sum(raw_errs) / len(raw_errs) if raw_errs else None
-    cal_mae_cv = sum(cal_errs) / len(cal_errs) if cal_errs else None
+    best_method = min(candidate_maes, key=candidate_maes.get)
+    cal_mae_cv = candidate_maes[best_method]
     improvement = None
     if raw_mae_cv and cal_mae_cv is not None:
         improvement = round((raw_mae_cv - cal_mae_cv) / raw_mae_cv * 100, 2)
 
     enabled = bool(improvement is not None and improvement >= MIN_IMPROVEMENT_PCT)
 
+    # Fit the chosen method on the full history for serving.
+    final_params = _fit_candidate(samples, best_method)
+    if final_params is None:
+        result = {"enabled": False, "status": "fit_failed", "n": n, "gws": gws}
+        if save:
+            _save(result)
+        return result
+
+    if best_method == "linear":
+        glob = {"a": round(final_params[0], 4), "b": round(final_params[1], 4), "n": n}
+    elif best_method == "shrink":
+        glob = {"t": round(final_params[0], 3), "f": round(final_params[1], 3), "n": n}
+    else:
+        glob = {"n": n}
+
+    # Per-position coefficients are kept for diagnostics and older code paths.
     by_pos = {}
     for pos in ("GK", "DEF", "MID", "FWD"):
         pairs = [s for s in samples if s["pos"] == pos]
-        if len(pairs) >= MIN_SAMPLES_POS:
-            f = _fit_linear(pairs)
-            if f:
-                by_pos[pos] = {"a": round(f[0], 4), "b": round(f[1], 4), "n": len(pairs)}
+        if len(pairs) < MIN_SAMPLES_POS:
+            continue
+        fitted = _fit_candidate(pairs, best_method)
+        if not fitted:
+            continue
+        if best_method == "linear":
+            by_pos[pos] = {"a": round(fitted[0], 4), "b": round(fitted[1], 4), "n": len(pairs)}
+        elif best_method == "shrink":
+            by_pos[pos] = {"t": round(fitted[0], 3), "f": round(fitted[1], 3), "n": len(pairs)}
 
     result = {
         "enabled": enabled,
         "status": "ok",
-        "global": {"a": round(glob[0], 4), "b": round(glob[1], 4), "n": n},
+        "method": best_method,
+        "apply_by_pos": False,
+        "global": glob,
         "by_pos": by_pos,
         "metrics": {
             "n": n,
@@ -162,6 +260,7 @@ def fit(save=True):
             "calibrated_mae_cv": round(cal_mae_cv, 3) if cal_mae_cv else None,
             "improvement_pct": improvement,
             "min_improvement_pct": MIN_IMPROVEMENT_PCT,
+            "by_method": {k: round(v, 3) for k, v in candidate_maes.items()},
         },
         "fitted_at": time.time(),
     }
@@ -200,6 +299,8 @@ def status():
         "fitted_at": params.get("fitted_at"),
         "global": params.get("global"),
         "by_pos": params.get("by_pos", {}),
+        "method": params.get("method", "linear"),
+        "by_method": m.get("by_method"),
     }
 
 
@@ -219,17 +320,30 @@ def apply(df, params=None):
     if not g:
         return df
     by_pos = params.get("by_pos", {})
+    method = params.get("method", "linear")
+    apply_by_pos = bool(params.get("apply_by_pos", True))
 
     out = df.copy()
     raw = out["proj"]
     import pandas as pd
 
     proj = pd.to_numeric(raw, errors="coerce")
+
+    def _calibrate(series, prm):
+        if method == "shrink" and "t" in prm and "f" in prm:
+            t, f = float(prm["t"]), float(prm["f"])
+            return series.where(series <= t, t + f * (series - t))
+        if "a" in prm and "b" in prm:
+            return float(prm["a"]) + float(prm["b"]) * series
+        return series
+
     cal = pd.Series(index=out.index, dtype="float64")
-    for pos, idx in out.groupby("pos").groups.items():
-        prm = by_pos.get(pos, g)
-        a, b = float(prm["a"]), float(prm["b"])
-        cal.loc[idx] = a + b * proj.loc[idx]
+    if apply_by_pos and by_pos:
+        for pos, idx in out.groupby("pos").groups.items():
+            prm = by_pos.get(pos, g)
+            cal.loc[idx] = _calibrate(proj.loc[idx], prm)
+    else:
+        cal = _calibrate(proj, g)
 
     # Never below zero; respect the position ceiling when available.
     try:

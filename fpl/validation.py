@@ -8,7 +8,7 @@ NEED = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 3}
 BUDGET = 1000
 
 
-def validate_squad(squad):
+def validate_squad(squad, budget=BUDGET):
     errors = []
     if len(squad) != 15:
         errors.append(f"jumlah {len(squad)}/15")
@@ -21,7 +21,7 @@ def validate_squad(squad):
         if cnt > 3:
             errors.append(f"klub {club} {cnt} pemain")
     cost = sum(p["price"] for p in squad)
-    if cost > BUDGET:
+    if cost > budget:
         errors.append(f"budget {cost / 10:.1f}m")
     return errors
 
