@@ -1,3 +1,5 @@
+import math
+
 import pandas as pd
 
 from .availability import chance_factor
@@ -63,6 +65,10 @@ def _minutes_consistency_factor(player):
     Players who always play 90 minutes get 1.0.
     Players who are regularly substituted or rotated get a penalty.
     New players (no starts) get a neutral 0.85.
+
+    This is the *fallback* when recent per-match minutes are unavailable.
+    When ``exp_minutes`` exists we use it directly: averaging 65 minutes per
+    appearance should not be penalised twice through a coarse band.
     """
     starts = player.get("starts") or 0
     minutes = player.get("minutes") or 0
@@ -83,6 +89,48 @@ def _minutes_consistency_factor(player):
         return 0.78  # Significant rotation risk
     else:
         return 0.65  # Heavy rotation / impact sub
+
+
+def _expected_minutes_factor(player, exp_minutes=None):
+    """Minutes multiplier: use recent expected minutes when available.
+
+    ``exp_minutes`` is the recent average *conditional on playing* (see
+    player_history._exp_minutes_from_rows).  The caller still multiplies by
+    ``chance`` (probability of any appearance), so the effective expected
+    minutes are ``chance * exp_minutes``.
+    """
+    try:
+        if exp_minutes is not None:
+            em = float(exp_minutes)
+            if em > 0:
+                return max(0.0, min(1.0, em / 90.0))
+    except (TypeError, ValueError):
+        pass
+    try:
+        row_em = player.get("exp_minutes")
+        if row_em is not None:
+            em = float(row_em)
+            if em > 0:
+                return max(0.0, min(1.0, em / 90.0))
+    except (TypeError, ValueError):
+        pass
+    return _minutes_consistency_factor(player)
+
+
+def _blend_recent(player, key, current):
+    """Blend a season rate with a recent rate when the latter is available."""
+    try:
+        recent = player.get(key)
+        if recent is None:
+            return current
+        recent = float(recent)
+        if math.isnan(recent):
+            return current
+        # 50/50 is deliberately conservative: recent form is informative but
+        # not enough to abandon the season baseline on its own.
+        return 0.5 * float(current) + 0.5 * recent
+    except (TypeError, ValueError):
+        return current
 
 
 def project_player(player, fixtures, gd, weights=None, dc=None, exp_minutes=None):
@@ -161,6 +209,12 @@ def project_player(player, fixtures, gd, weights=None, dc=None, exp_minutes=None
     raw_xgi_per90 = float(player.get("xGI_per90") or 0)
     raw_ict_per_game = float(player.get("ict_per_game") or 0)
 
+    # Recent-form blend: the bootstrap's season totals react slowly after a
+    # transfer/role change, while player_history has the last ~6 matches.
+    raw_form = _blend_recent(player, "rec_form", raw_form)
+    raw_xgi_per90 = _blend_recent(player, "rec_xgi90", raw_xgi_per90)
+    raw_ict_per_game = _blend_recent(player, "rec_ict90", raw_ict_per_game)
+
     # Damp form & ppg toward positional league average in early season
     form = raw_form * form_confidence + pos_avg["form"] * (1 - form_confidence)
     ppg = raw_ppg * form_confidence + pos_avg["ppg"] * (1 - form_confidence)
@@ -183,6 +237,7 @@ def project_player(player, fixtures, gd, weights=None, dc=None, exp_minutes=None
 
     # GK saves signal — replaces xGI for goalkeepers (xGI is always ~0 for GK)
     saves_per_game = float(player.get("saves_per_game") or 0)
+    saves_per_game = _blend_recent(player, "rec_saves90", saves_per_game)
     if pos == "GK" and saves_per_game > 0:
         # Saves contribute: 3 saves = 1 FPL point. A busy GK (4+ saves/game)
         # gets ~1.3 extra pts/game from saves alone. Scale to form-like range.
@@ -224,8 +279,10 @@ def project_player(player, fixtures, gd, weights=None, dc=None, exp_minutes=None
     creativity_w = weights.get("creativity_weight", 0.06) if weights else 0.06
     creativity_bonus = creativity_norm * creativity_w
 
-    # --- Minutes consistency multiplier ---
-    minutes_factor = _minutes_consistency_factor(player)
+    # --- Minutes multiplier ---
+    # Use recent expected minutes when available; fall back to the old
+    # season-minutes band.  This avoids double-penalising rotation risk.
+    minutes_factor = _expected_minutes_factor(player, exp_minutes=exp_minutes)
 
     # --- DefCon expected points (per fixture; DGW counts twice) ---
     dc_w = weights.get("dc_weight", 0.90) if weights else 0.90
@@ -321,10 +378,13 @@ def project_player(player, fixtures, gd, weights=None, dc=None, exp_minutes=None
         "dc_prob": round(dc_prob, 3),
         "dc_bonus": round(dc_bonus, 3),
         "minutes_factor": round(minutes_factor, 2),
-        # Keep raw chance semantics (None/percent 0-100) — consumers convert.
-        "chance": player.get("chance_next", player.get("chance")),
-        "chance_this": player.get("chance_this"),
-        "chance_next": player.get("chance_next", player.get("chance")),
+        # Normalised playing-chance columns (0-100).  Using the factor from
+        # availability.py prevents fit players with a null official percentage
+        # from becoming NaN and being dropped by UI filters.
+        "chance": round(chance * 100.0, 1),
+        "chance_this": round(chance_factor(player, "this") * 100.0, 1),
+        "chance_next": round(chance * 100.0, 1),
+        "chance_factor": round(chance, 3),
         "is_home": primary["is_home"],
         "fdr": primary["fdr"],
         "opponent": primary["opponent"],
@@ -345,9 +405,15 @@ def build_projection_table(gd, use_tuned_weights=True):
     """
     weights = _get_weights() if use_tuned_weights else None
 
-    # DefCon parameters + expected minutes (file-cache only — no network calls)
+    # DefCon parameters + recent history (file-cache only — no network calls)
     dc = None
     emap = {}
+    hist_map = {}
+    current_gw = None
+    try:
+        current_gw = int(gd.next_event["id"])
+    except Exception:
+        current_gw = None
     try:
         from .defcon import load as _load_defcon
 
@@ -355,16 +421,38 @@ def build_projection_table(gd, use_tuned_weights=True):
     except Exception:
         dc = None
     try:
-        from .player_history import exp_minutes_map
+        from .player_history import attach as _hist_attach
 
-        emap = exp_minutes_map([int(p["id"]) for p in gd.players])
+        base = pd.DataFrame({"id": [int(p["id"]) for p in gd.players]})
+        base = _hist_attach(gd, base, current_gw=current_gw)
+        hist_map = {int(r["id"]): r for _, r in base.iterrows()}
+        emap = {
+            pid: row.get("exp_minutes")
+            for pid, row in hist_map.items()
+            if row.get("exp_minutes") is not None
+        }
     except Exception:
+        hist_map = {}
         emap = {}
+
+    _HIST_FIELDS = (
+        "exp_minutes", "rec_form", "rec_xgi90", "rec_xg90", "rec_xa90",
+        "rec_dc90", "rec_saves90", "rec_bonus90", "rec_bps90", "rec_cs90",
+        "rec_gc90", "rec_goals90", "rec_assists90", "rec_threat90",
+        "rec_creativity90", "hist_rows", "hist_status", "hist_last_gw",
+    )
 
     records = []
     for p in gd.players:
         fixtures = gd.fixture_list_for_team(p["team"])
-        meta = project_player(p, fixtures, gd, weights=weights, dc=dc,
+        player_row = dict(p)
+        h = hist_map.get(int(p["id"]))
+        if h is not None:
+            for key in _HIST_FIELDS:
+                value = h.get(key)
+                if value is not None:
+                    player_row[key] = value
+        meta = project_player(player_row, fixtures, gd, weights=weights, dc=dc,
                               exp_minutes=emap.get(int(p["id"])))
         rec = dict(p)
         if meta:
@@ -387,6 +475,9 @@ def build_projection_table(gd, use_tuned_weights=True):
                     "dc_bonus": meta["dc_bonus"],
                     "minutes_factor": meta["minutes_factor"],
                     "chance": meta["chance"],
+                    "chance_this": meta["chance_this"],
+                    "chance_next": meta["chance_next"],
+                    "chance_factor": meta["chance_factor"],
                     "is_home": meta["is_home"],
                     "fdr": meta["fdr"],
                     "opponent_short": meta["opponent_short"],
@@ -413,9 +504,10 @@ def build_projection_table(gd, use_tuned_weights=True):
                     "dc_prob": 0.0,
                     "dc_bonus": 0.0,
                     "minutes_factor": 0.0,
-                    "chance": p.get("chance"),
-                    "chance_this": p.get("chance_this"),
-                    "chance_next": p.get("chance_next", p.get("chance")),
+                    "chance": round(chance_factor(p, "next") * 100.0, 1),
+                    "chance_this": round(chance_factor(p, "this") * 100.0, 1),
+                    "chance_next": round(chance_factor(p, "next") * 100.0, 1),
+                    "chance_factor": round(chance_factor(p, "next"), 3),
                     "is_home": None,
                     "fdr": None,
                     "opponent_short": None,
@@ -426,6 +518,32 @@ def build_projection_table(gd, use_tuned_weights=True):
         records.append(rec)
     df = pd.DataFrame(records)
     df["proj"] = pd.to_numeric(df["proj"], errors="coerce")
+
+    # Normalise chance columns for every player (including no-fixture rows).
+    try:
+        from .availability import availability as _availability
+
+        by_id = {int(p["id"]): p for p in gd.players}
+        next_pct = {}
+        this_pct = {}
+        for pid, p in by_id.items():
+            av_next = _availability(p, "next")
+            av_this = _availability(p, "this")
+            next_pct[pid] = av_next["pct"]
+            this_pct[pid] = av_this["pct"]
+        ids = df["id"].astype(int)
+        df["chance"] = ids.map(next_pct)
+        df["chance_next"] = ids.map(next_pct)
+        df["chance_this"] = ids.map(this_pct)
+        df["chance_factor"] = df["chance"].astype(float) / 100.0
+    except Exception:
+        for col in ("chance", "chance_this", "chance_next", "chance_factor"):
+            if col not in df.columns:
+                df[col] = None
+        df["chance"] = pd.to_numeric(df["chance"], errors="coerce")
+        df["chance_this"] = pd.to_numeric(df["chance_this"], errors="coerce")
+        df["chance_next"] = pd.to_numeric(df["chance_next"], errors="coerce")
+        df["chance_factor"] = df["chance"].astype(float) / 100.0
 
     # Add ML projections if model is available
     try:

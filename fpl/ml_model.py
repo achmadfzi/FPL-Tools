@@ -26,23 +26,59 @@ FEATURE_NAMES = [
 ]
 
 
+# Snapshot columns that may be available.  Older accuracy files only contain
+# proj/pos/fdr; the builder keeps only columns with enough coverage so those
+# files still produce a valid (small) feature set.
+_EXTRA_FEATURES = (
+    "own", "ep_next", "form", "ppg", "xgi90", "xg90", "xa90",
+    "threat", "xgi_sig", "ict_sig", "bonus", "creativity",
+    "cs_prob", "dc_prob", "dc_bonus", "minutes_factor",
+    "selected_by", "price", "is_home", "n_fixtures",
+)
+
+
+def _feature_dict(proj_info, proj, pos, fdr):
+    features = {
+        "proj": float(proj),
+        "proj_squared": float(proj) ** 2,
+        "proj_log": math.log(max(float(proj), 0.1)),
+        "fdr": float(fdr) if fdr is not None else 3.0,
+        "fdr_easy": 1.0 if fdr and fdr <= 2 else 0.0,
+        "fdr_hard": 1.0 if fdr and fdr >= 4 else 0.0,
+        "pos_gk": 1.0 if pos == "GK" else 0.0,
+        "pos_def": 1.0 if pos == "DEF" else 0.0,
+        "pos_mid": 1.0 if pos == "MID" else 0.0,
+        "pos_fwd": 1.0 if pos == "FWD" else 0.0,
+    }
+    for key in _EXTRA_FEATURES:
+        value = proj_info.get(key)
+        if value is None:
+            continue
+        try:
+            if isinstance(value, bool):
+                value = 1.0 if value else 0.0
+            features[key] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return features
+
+
 def _build_training_data():
-    """Build training dataset from accuracy history + player data.
+    """Build training dataset from accuracy history + full feature snapshots.
 
-    For each completed GW, we match projections with actuals AND
-    try to reconstruct feature vectors from the cached player data.
-
-    Returns: (X: np.ndarray, y: np.ndarray, feature_names: list)
+    Returns: (X, y, feature_names, groups) where groups is the GW id per row.
     """
     from .accuracy import _load as load_accuracy
 
     data = load_accuracy()
-    X_rows = []
+    rows = []
     y_rows = []
+    groups = []
 
     for key in sorted(data.keys()):
         if not key.startswith("gw_"):
             continue
+        gw = int(key.split("_")[1])
         entry = data[key]
         projections = entry.get("projections", {})
         actuals = entry.get("actuals", {})
@@ -53,79 +89,64 @@ def _build_training_data():
         for pid, proj_info in projections.items():
             if pid not in actuals:
                 continue
-
             actual = actuals[pid]
             proj = proj_info.get("proj", 0)
             pos = proj_info.get("pos", "MID")
             fdr = proj_info.get("fdr")
-
             if proj is None or proj <= 0:
                 continue
-
-            # Build feature vector from available data
-            # We use the projection itself and derived features
-            features = {
-                "proj": proj,
-                "fdr": fdr if fdr is not None else 3,
-                "pos_gk": 1 if pos == "GK" else 0,
-                "pos_def": 1 if pos == "DEF" else 0,
-                "pos_mid": 1 if pos == "MID" else 0,
-                "pos_fwd": 1 if pos == "FWD" else 0,
-                "proj_squared": proj ** 2,
-                "proj_log": math.log(max(proj, 0.1)),
-                "fdr_easy": 1 if fdr and fdr <= 2 else 0,
-                "fdr_hard": 1 if fdr and fdr >= 4 else 0,
-            }
-
-            X_rows.append([features[k] for k in sorted(features.keys())])
+            rows.append(_feature_dict(proj_info, proj, pos, fdr))
             y_rows.append(actual)
+            groups.append(gw)
 
-    if not X_rows:
-        return None, None, sorted(features.keys()) if X_rows else []
+    if not rows:
+        return None, None, [], []
 
-    return np.array(X_rows, dtype=np.float64), np.array(y_rows, dtype=np.float64), sorted(features.keys())
+    # Keep a feature only when it is present for at least half the samples.
+    # This prevents a column that exists in one GW from becoming a constant
+    # zero for all other GWs.
+    keys = set()
+    for row in rows:
+        keys.update(row.keys())
+    n = len(rows)
+    feature_names = []
+    for key in sorted(keys):
+        coverage = sum(1 for row in rows if key in row)
+        if coverage >= max(10, int(0.5 * n)):
+            feature_names.append(key)
+
+    X_rows = [[row.get(key, 0.0) for key in feature_names] for row in rows]
+    return (
+        np.array(X_rows, dtype=np.float64),
+        np.array(y_rows, dtype=np.float64),
+        feature_names,
+        np.array(groups, dtype=np.int64),
+    )
 
 
-def _build_prediction_features(player_data):
-    """Build feature vector for a single player for prediction.
-
-    Args:
-        player_data: dict with player fields (from projection table row)
-
-    Returns: np.ndarray of shape (1, n_features)
-    """
+def _build_prediction_features(player_data, feature_names):
+    """Build a feature vector matching the trained model's columns."""
     proj = float(player_data.get("proj") or 0)
-    fdr = player_data.get("fdr")
-    pos = player_data.get("pos", "MID")
-
     if proj <= 0:
         return None
-
-    features = {
-        "fdr": fdr if fdr is not None else 3,
-        "fdr_easy": 1 if fdr and fdr <= 2 else 0,
-        "fdr_hard": 1 if fdr and fdr >= 4 else 0,
-        "pos_def": 1 if pos == "DEF" else 0,
-        "pos_fwd": 1 if pos == "FWD" else 0,
-        "pos_gk": 1 if pos == "GK" else 0,
-        "pos_mid": 1 if pos == "MID" else 0,
-        "proj": proj,
-        "proj_log": math.log(max(proj, 0.1)),
-        "proj_squared": proj ** 2,
-    }
-
-    return np.array([[features[k] for k in sorted(features.keys())]], dtype=np.float64)
+    features = _feature_dict(
+        player_data,
+        proj,
+        player_data.get("pos", "MID"),
+        player_data.get("fdr"),
+    )
+    return np.array([[features.get(key, 0.0) for key in feature_names]], dtype=np.float64)
 
 
 def train_model():
-    """Train ML models on historical data.
+    """Train ML models with Gameweek-grouped cross-validation.
 
-    Trains both Ridge Regression (simple, interpretable) and
-    Gradient Boosting Regressor (more accurate).
-
-    Returns: dict with training results and metrics.
+    The old version used random KFold, which leaks information across rows
+    from the same Gameweek, and compared GBR CV error against the formula's
+    *training* error.  Both are fixed here.  A model is only marked enabled
+    when it beats the formula out-of-sample; otherwise it stays experimental.
     """
-    X, y, feature_names = _build_training_data()
+    X, y, feature_names, groups = _build_training_data()
 
     if X is None or len(X) < 20:
         n = 0 if X is None else len(X)
@@ -137,60 +158,78 @@ def train_model():
 
     from sklearn.ensemble import GradientBoostingRegressor
     from sklearn.linear_model import Ridge
-    from sklearn.model_selection import cross_val_score
+    from sklearn.model_selection import GroupKFold, cross_val_score
 
     n_samples = len(X)
+    n_gws = len(set(int(g) for g in groups))
+    if n_gws >= 2:
+        cv = GroupKFold(n_splits=min(5, n_gws))
+        cv_kwargs = {"groups": groups}
+        split_groups = groups
+    else:
+        from sklearn.model_selection import KFold
 
-    # Train Ridge Regression
+        cv = KFold(n_splits=2, shuffle=True, random_state=42)
+        cv_kwargs = {}
+        split_groups = None
+
     ridge = Ridge(alpha=1.0)
-    ridge_cv = cross_val_score(ridge, X, y, cv=min(5, n_samples), scoring="neg_mean_absolute_error")
-    ridge_mae = -ridge_cv.mean()
+    ridge_cv = cross_val_score(
+        ridge, X, y, cv=cv, **cv_kwargs,
+        scoring="neg_mean_absolute_error",
+    )
+    ridge_mae = float(-ridge_cv.mean())
     ridge.fit(X, y)
 
-    # Train Gradient Boosting
     gbr = GradientBoostingRegressor(
-        n_estimators=min(100, max(20, n_samples // 2)),
+        n_estimators=min(150, max(30, n_samples // 15)),
         max_depth=3,
-        learning_rate=0.1,
-        min_samples_leaf=max(2, n_samples // 20),
+        learning_rate=0.05,
+        min_samples_leaf=max(5, n_samples // 60),
         random_state=42,
     )
-    gbr_cv = cross_val_score(gbr, X, y, cv=min(5, n_samples), scoring="neg_mean_absolute_error")
-    gbr_mae = -gbr_cv.mean()
+    gbr_cv = cross_val_score(
+        gbr, X, y, cv=cv, **cv_kwargs,
+        scoring="neg_mean_absolute_error",
+    )
+    gbr_mae = float(-gbr_cv.mean())
     gbr.fit(X, y)
 
-    # Compute residuals for confidence intervals
     gbr_preds = gbr.predict(X)
     residuals = y - gbr_preds
     residual_std = float(np.std(residuals))
 
-    # Compute baseline MAE (just using formula projection as-is)
-    proj_idx = sorted({
-        "fdr": 0, "fdr_easy": 0, "fdr_hard": 0,
-        "pos_def": 0, "pos_fwd": 0, "pos_gk": 0, "pos_mid": 0,
-        "proj": 0, "proj_log": 0, "proj_squared": 0,
-    }.keys()).index("proj")
-    formula_preds = X[:, proj_idx]
-    formula_mae = float(np.mean(np.abs(y - formula_preds)))
+    # Formula baseline on the same held-out folds.
+    proj_idx = feature_names.index("proj")
+    formula_errors = []
+    for _train_idx, test_idx in cv.split(X, y, split_groups):
+        formula_errors.extend(np.abs(y[test_idx] - X[test_idx, proj_idx]))
+    formula_mae = float(np.mean(formula_errors)) if formula_errors else float("nan")
 
-    # Feature importance from GBR
     importances = dict(zip(feature_names, [round(float(v), 4) for v in gbr.feature_importances_]))
+    improvement = (formula_mae - gbr_mae) / formula_mae * 100 if formula_mae else 0.0
+    enabled = bool(
+        n_samples >= 200
+        and n_gws >= 4
+        and math.isfinite(formula_mae)
+        and gbr_mae < formula_mae
+    )
 
-    # Save models
     model_data = {
         "ridge": ridge,
         "gbr": gbr,
         "feature_names": feature_names,
         "residual_std": residual_std,
+        "enabled": enabled,
     }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(MODEL_FILE, "wb") as f:
         pickle.dump(model_data, f)
 
-    # Save metadata
     meta = {
         "trained_at": time.time(),
         "n_samples": n_samples,
+        "n_gws": n_gws,
         "n_features": len(feature_names),
         "feature_names": feature_names,
         "ridge_mae": round(ridge_mae, 3),
@@ -198,18 +237,21 @@ def train_model():
         "formula_mae": round(formula_mae, 3),
         "residual_std": round(residual_std, 3),
         "importances": importances,
-        "improvement_vs_formula": round((formula_mae - gbr_mae) / formula_mae * 100, 1),
+        "improvement_vs_formula": round(improvement, 1),
+        "enabled": enabled,
     }
     MODEL_META_FILE.write_text(json.dumps(meta, indent=2))
 
     return {
         "status": "ok",
         "n_samples": n_samples,
+        "n_gws": n_gws,
         "ridge_mae": round(ridge_mae, 3),
         "gbr_mae": round(gbr_mae, 3),
         "formula_mae": round(formula_mae, 3),
         "residual_std": round(residual_std, 3),
-        "improvement_pct": round((formula_mae - gbr_mae) / formula_mae * 100, 1),
+        "improvement_pct": round(improvement, 1),
+        "enabled": enabled,
         "importances": importances,
     }
 
@@ -242,8 +284,13 @@ def predict_player(player_data, model_data=None):
 
     if model_data is None:
         return None
+    if model_data.get("enabled") is False:
+        return None
 
-    features = _build_prediction_features(player_data)
+    feature_names = model_data.get("feature_names") or []
+    if not feature_names:
+        return None
+    features = _build_prediction_features(player_data, feature_names)
     if features is None:
         return None
 
@@ -314,8 +361,11 @@ def model_status():
 
     return {
         "available": True,
+        "enabled": bool(meta.get("enabled", False)),
         "trained_at": meta.get("trained_at"),
         "n_samples": meta.get("n_samples"),
+        "n_gws": meta.get("n_gws"),
+        "n_features": meta.get("n_features"),
         "gbr_mae": meta.get("gbr_mae"),
         "formula_mae": meta.get("formula_mae"),
         "improvement_pct": meta.get("improvement_vs_formula"),
