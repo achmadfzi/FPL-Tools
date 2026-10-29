@@ -56,8 +56,10 @@ def load(gd, ids=None, force=False):
             continue
         try:
             st = _stats_from_summary(get_element_summary(pid))
-            if st:
-                data[key] = st
+            # Store an empty marker for players without a past season so they
+            # are not re-fetched on every TTL expiry (this used to stall the
+            # dashboard by several minutes on first load).
+            data[key] = st or {}
         except Exception:
             pass
     _save_file(data)
