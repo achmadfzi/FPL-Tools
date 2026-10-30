@@ -89,8 +89,11 @@ def free_transfers(team_id):
         cost = int(e.get("event_transfers_cost") or 0)
         chip = chips.get(gw)
         if chip:
-            # Chip week: no free transfer is granted, banked FTs are kept.
-            detail.append(f"GW{gw} {CHIP_NAMES.get(chip, chip)} (FT tetap {ft})")
+            # Playing a chip does not remove the normal free transfer for the
+            # next Gameweek.  Wildcard/Free Hit transfers are unlimited, so we
+            # do not subtract ``used`` in this branch.
+            ft = min(FT_MAX, max(0, ft) + 1)
+            detail.append(f"GW{gw} {CHIP_NAMES.get(chip, chip)} (FT → {ft})")
             continue
         hit_transfers = used - max(0, cost // HIT_COST)
         ft_next = min(FT_MAX, max(0, ft - hit_transfers) + 1)
@@ -192,11 +195,15 @@ def manager_state(df, team_id=None, current_gw=None):
 # ---------------------------------------------------------------------------
 
 
-def xi_value(squad_ids, values, pos_of):
+def xi_value(squad_ids, values, pos_of, captain_mult=0.0):
     """Max projected XI total for a legal 15-player squad (formation max).
 
     Club limits are already satisfied by the squad, so only formations matter.
     values: {player_id: points}.
+
+    ``captain_mult`` adds an extra copy of the best player's points, e.g.
+    ``1.0`` for the normal captain double.  It is opt-in so existing callers
+    and tests keep their old semantics.
     """
     gk, defs, mids, fwds = [], [], [], []
     for pid in squad_ids:
@@ -236,6 +243,15 @@ def xi_value(squad_ids, values, pos_of):
             if nf < 1 or nf > 3 or nf > len(fwds):
                 continue
             total = gk[0] + dsum[nd] + msum[nm] + fsum[nf]
+            if captain_mult:
+                top = gk[0]
+                if nd:
+                    top = max(top, defs[0])
+                if nm:
+                    top = max(top, mids[0])
+                if nf:
+                    top = max(top, fwds[0])
+                total += float(captain_mult) * top
             if total > best:
                 best = total
     return best
@@ -340,7 +356,7 @@ def optimize_squad(df, budget, player_values, exclude_ids=(), forced_ids=(), clu
 
 def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
                    max_per_gw=2, top_singles=24, top_doubles=50,
-                   min_in_chance=0.0):
+                   min_in_chance=0.0, min_gain=1.5, hit_margin=1.0):
     """Beam search over transfer sequences for the next `horizon` GWs.
 
     Args:
@@ -379,7 +395,9 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
     values_per_gw = [_gw_values(g) for g in range(horizon)]
 
     def xi(ids, g):
-        return xi_value(ids, values_per_gw[g], pos_of)
+        # Include the captain's extra copy: a transfer that upgrades the
+        # captain is worth more than one that only upgrades a bench player.
+        return xi_value(ids, values_per_gw[g], pos_of, captain_mult=1.0)
 
     squad0 = tuple(sorted(state["squad_ids"]))
     bank0 = int(state["bank"])
@@ -446,7 +464,7 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
                 out_av = info[out]["availability"]
                 # An unavailable player is worth selling even for a small
                 # projected gain; a normal transfer needs a clearer edge.
-                min_gain = 0.2 if out_av["is_out"] else 1.0
+                need_gain = 0.2 if out_av["is_out"] else float(min_gain)
                 for in_pid in pool_by_pos[out_pos]:
                     if in_pid in squad_set:
                         continue
@@ -454,7 +472,7 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
                     if pinfo["price"] > budget_in:
                         continue
                     gain = totals.get(in_pid, 0.0) - out_total
-                    if gain <= min_gain:
+                    if gain <= need_gain:
                         continue
                     new_squad = tuple(sorted((squad_set - {out}) | {in_pid}))
                     singles.append((gain, out, in_pid, new_squad))
@@ -470,9 +488,12 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
                 if not club_ok(new_squad) or not structure_ok(new_squad):
                     continue
                 new_ft = min(FT_MAX, max(0, st["ft"] - k) + 1)
+                new_xi = xi(new_squad, g)
+                if hits and (new_xi - base - hits) < float(hit_margin):
+                    continue
                 next_states.append({
                     "squad": new_squad, "bank": new_bank, "ft": new_ft,
-                    "cum": st["cum"] + xi(new_squad, g) - hits,
+                    "cum": st["cum"] + new_xi - hits,
                     "plan": st["plan"] + [{
                         "gw": cur + g,
                         "transfers": [{"out": out, "in": in_pid, "gain_horizon": round(gain_rank, 2)}],
@@ -506,9 +527,12 @@ def plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=30,
                     if new_bank < 0:
                         continue
                     new_ft = min(FT_MAX, max(0, st["ft"] - k) + 1)
+                    new_xi = xi(new_squad, g)
+                    if hits and (new_xi - base - hits) < float(hit_margin):
+                        continue
                     next_states.append({
                         "squad": new_squad, "bank": new_bank, "ft": new_ft,
-                        "cum": st["cum"] + xi(new_squad, g) - hits,
+                        "cum": st["cum"] + new_xi - hits,
                         "plan": st["plan"] + [{
                             "gw": cur + g,
                             "transfers": [

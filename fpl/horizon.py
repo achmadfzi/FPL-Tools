@@ -54,7 +54,14 @@ def future_proj(row, gd, event_id, steps_ahead=1):
         return None
 
     # --- Early-season form confidence (mirrors model.py v3) ---
-    from .model import FORM_RAMP_GWS, POS_LEAGUE_AVG, XGI_PRIOR_STRENGTH, POS_CEILING
+    from .model import (
+        FORM_RAMP_GWS,
+        POS_CEILING,
+        POS_LEAGUE_AVG,
+        XGI_PRIOR_STRENGTH,
+        _blend_recent,
+        _expected_minutes_factor,
+    )
 
     pos = row.get("pos", "MID")
 
@@ -71,6 +78,8 @@ def future_proj(row, gd, event_id, steps_ahead=1):
     raw_ppg = float(row.get("ppg") or 0)
     raw_xgi_per90 = float(row.get("xGI_per90") or 0)
     raw_ict_per_game = float(row.get("ict_per_game") or 0)
+    raw_form = _blend_recent(row, "rec_form", raw_form)
+    raw_xgi_per90 = _blend_recent(row, "rec_xgi90", raw_xgi_per90)
 
     # Damp form & ppg toward positional league average in early season
     form = raw_form * form_confidence + pos_avg["form"] * (1 - form_confidence)
@@ -98,6 +107,7 @@ def future_proj(row, gd, event_id, steps_ahead=1):
 
     # GK saves signal — replaces xGI for goalkeepers (consistent with model.py)
     saves_per_game = float(row.get("saves_per_game") or 0)
+    saves_per_game = _blend_recent(row, "rec_saves90", saves_per_game)
     if pos == "GK" and saves_per_game > 0:
         saves_signal = min(saves_per_game / SAVES_NORM_FACTOR, 1.5) * max(form, ppg, 2.0)
         xgi_signal = saves_signal
@@ -123,12 +133,8 @@ def future_proj(row, gd, event_id, steps_ahead=1):
     creativity_w = w_get("creativity_weight", 0.06)
     cs_w = w_get("cs_weight", 0.15)
 
-    # Minutes consistency (same as model.py)
-    if starts == 0 or minutes == 0:
-        minutes_factor = 0.85
-    else:
-        mps = minutes / max(starts, 1)
-        minutes_factor = 1.0 if mps >= 85 else 0.95 if mps >= 75 else 0.88 if mps >= 60 else 0.78 if mps >= 45 else 0.65
+    # Minutes multiplier (same recent-minutes logic as model.py)
+    minutes_factor = _expected_minutes_factor(row, exp_minutes=row.get("exp_minutes"))
 
     # --- Fixtures for this future event ---
     fixtures = gd.fixture_list_for_team_event(team, event_id)

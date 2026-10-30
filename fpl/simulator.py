@@ -24,7 +24,10 @@ Simulation model (v2):
 - GK saves:          Poisson around saves-per-game (3 saves = 1 pt)
 - bonus:             top-3 weighted draw over both teams, weights = bonus
                      tendency boosted by goals/assists/CS/DefCon, damped by
-                     cards
+                     cards; awards the official 3/2/1 bonus points
+- calibration:       simulated means are rescaled to the served point
+                     projection for the current GW; the simulation supplies
+                     variance/correlation, not a second mean forecast
 - captain:           EV = 2x pts if C plays, else 2x pts of the vice-captain
                      if VC plays, else 0 (auto-sub replacement is not doubled)
 
@@ -48,6 +51,7 @@ ASSIST_PTS = 3
 MIN_MINS_FULL = 60
 P_ASSIST = 0.72
 N_BONUS = 3
+BONUS_POINTS = (3, 2, 1)  # FPL awards 3/2/1, not 1/1/1
 
 # Penalty model (league averages)
 P_GOAL_PEN = 0.10            # share of goals that are penalties
@@ -96,12 +100,29 @@ def _per90(row, field, total_field, fallback=0.0):
     return fallback
 
 
+def _blend_rate(season, recent, weight=0.5):
+    """Blend season and recent per-90 rates when both are available."""
+    try:
+        recent = float(recent) if recent is not None else None
+    except (TypeError, ValueError):
+        recent = None
+    if recent is None or recent <= 0:
+        return float(season or 0.0)
+    season = float(season or 0.0)
+    if season <= 0:
+        return recent
+    w = max(0.0, min(1.0, float(weight)))
+    return (1.0 - w) * season + w * recent
+
+
 def _xg90(row):
-    return _per90(row, "xG_per90", "xG", fallback=0.0)
+    season = _per90(row, "xG_per90", "xG", fallback=0.0)
+    return _blend_rate(season, row.get("rec_xg90"))
 
 
 def _xa90(row):
-    return _per90(row, "xA_per90", "xA", fallback=0.0)
+    season = _per90(row, "xA_per90", "xA", fallback=0.0)
+    return _blend_rate(season, row.get("rec_xa90"))
 
 
 def _attack_weight(row):
@@ -167,24 +188,36 @@ def _rosters(gd, df):
             pass
         saves90 = r.get("saves_per_game")
         try:
-            entry["saves90"][pid] = float(saves90) if saves90 and float(saves90) > 0 else 0.0
+            season_saves = float(saves90) if saves90 and float(saves90) > 0 else 0.0
+            entry["saves90"][pid] = _blend_rate(season_saves, r.get("rec_saves90"))
         except (TypeError, ValueError):
             entry["saves90"][pid] = 0.0
     return teams
 
 
 def _goals_lambda(gd, team_id, opp_id, is_home):
+    """Expected goals for one team in one match.
+
+    Uses the same shrunken, clamped dynamic multiplier as the projection
+    model (``GameData.fixture_dyn_mult``).  The raw Poisson attack/defence
+    indices used to be applied directly here, which produced extreme lambdas
+    (e.g. 3.8 goals for one team) while the projection model capped the same
+    signal at 1.2x.  Keeping both engines on the same scale is essential:
+    captain EV, chips and lineups must not disagree with the points model.
+    """
     ti = getattr(gd, "team_indices", None)
     meta = (ti or {}).get("_meta", {}) if ti else {}
-    if ti:
-        t = ti.get(team_id, {}) or {}
-        o = ti.get(opp_id, {}) or {}
-        att = float(t.get("att") or 1.0) if float(t.get("att") or 0) > 0 else 1.0
-        gc = float(o.get("gc") or 1.0) if float(o.get("gc") or 0) > 0 else 1.0
-    else:
-        att, gc = 1.0, 1.0
     L = meta.get("L_home" if is_home else "L_away", 1.4 if is_home else 1.2)
-    return max(0.05, L * att * gc)
+    if not ti:
+        return max(0.05, float(L))
+    try:
+        dyn = gd.fixture_dyn_mult(team_id, opp_id, is_home)
+    except Exception:
+        dyn = 1.0
+    lam = float(L) * float(dyn)
+    # Dynamic indices are already clamped/blended; this outer guard catches
+    # malformed data without flattening genuine fixture differences.
+    return max(0.15, min(3.5, lam))
 
 
 def _draw_weighted(rng, pool, weights):
@@ -205,7 +238,8 @@ def _draw_weighted(rng, pool, weights):
     return last
 
 
-def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None):
+def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None,
+                return_components=False):
     """Simulate a Gameweek for a subset of players.
 
     Args:
@@ -221,6 +255,11 @@ def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None):
     Returns:
         (pts, played): {player_id: [n values]} — points (no captain doubling)
         and {player_id: [n bools]} — played at all.
+
+    For the current Gameweek, simulated means are rescaled to each row's
+    ``proj`` (the served point forecast) so the simulation supplies the
+    distribution/risk rather than a second mean forecast.  Returns 3-tuples
+    with component breakdowns that are *pre-calibration* diagnostics.
     """
     squad_rows = list(squad_rows)
     involved = {}
@@ -250,6 +289,17 @@ def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None):
 
     pts = {pid: [0.0] * n for pid in all_pids}
     played = {pid: [False] * n for pid in all_pids}
+    comp = {}
+    if return_components:
+        comp = {
+            pid: {
+                "appearance": 0.0, "clean_sheet": 0.0, "goals": 0.0,
+                "assists": 0.0, "defcon": 0.0, "saves": 0.0,
+                "cards": 0.0, "goals_conceded": 0.0, "bonus": 0.0,
+                "penalty_saves": 0.0, "penalty_misses": 0.0,
+            }
+            for pid in all_pids
+        }
 
     for it in range(n):
         for _key, entries in pair_keys.items():
@@ -261,8 +311,12 @@ def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None):
                 h_team, a_team = home_entries[0][0], home_entries[0][1]
             else:
                 a_team, h_team = away_entries[0][0], away_entries[0][1]
-            gh = _goals_lambda(gd, h_team, a_team, True) if home_entries else 0.0
-            ga = _goals_lambda(gd, a_team, h_team, False) if away_entries else 0.0
+            # Always sample BOTH sides' goals, even when only one team has
+            # tracked players in the squad.  Previously the untracked side's
+            # lambda was set to 0, which gifted a clean sheet to every
+            # defender/GK (and removed goals-conceded penalties).
+            gh = _goals_lambda(gd, h_team, a_team, True)
+            ga = _goals_lambda(gd, a_team, h_team, False)
             g_home = int(rng.poisson(lam=gh)) if gh > 0 else 0
             g_away = int(rng.poisson(lam=ga)) if ga > 0 else 0
 
@@ -320,12 +374,17 @@ def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None):
                 # 4) goals (penalties + open play)
                 open_scorers = []
                 pen_scorers = []
+                pen_miss_takers = {}
                 for _ in range(scored):
                     if pen_taker is not None and rng.random() < P_GOAL_PEN and _taker_can_play(pen_taker):
                         if rng.random() <= P_PEN_SCORED:
                             pen_scorers.append(pen_taker)
-                        elif rng.random() < P_PEN_SAVED_GIVEN_MISS:
-                            pen_save_credits[oid] = pen_save_credits.get(oid, 0) + 1
+                        else:
+                            # A missed penalty is -2 for the taker, even if
+                            # the goalkeeper also gets a save bonus.
+                            pen_miss_takers[pen_taker] = pen_miss_takers.get(pen_taker, 0) + 1
+                            if rng.random() < P_PEN_SAVED_GIVEN_MISS:
+                                pen_save_credits[oid] = pen_save_credits.get(oid, 0) + 1
                         continue
                     pick = _draw_weighted(rng, pool, weights)
                     if pick is not None:
@@ -371,7 +430,8 @@ def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None):
                             saves_t[pid] = int(rng.poisson(lam=spg * share))
 
                 side_stats.append((tid, oid, mins_t, cs_t, g_count, a_count,
-                                   scored, conceded, yc_t, rc_t, dc_t, saves_t))
+                                   scored, conceded, yc_t, rc_t, dc_t, saves_t,
+                                   pen_miss_takers))
 
             # ---- penalty saves by the conceding side's GK ----
             # (credits were recorded while the other side was processed)
@@ -391,41 +451,62 @@ def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None):
                                 best_gk, best_m = pid, mins_t.get(pid, 0)
                     if best_gk is not None and best_m > 0:
                         pts[best_gk][it] += 5 * count
+                        if return_components:
+                            comp[best_gk]["penalty_saves"] += 5 * count
 
             # ---- apply appearance/CS/event points to our targets ----
-            for tid, oid, mins_t, cs_t, g_count, a_count, scored, conceded, yc_t, rc_t, dc_t, saves_t in side_stats:
+            for tid, oid, mins_t, cs_t, g_count, a_count, scored, conceded, yc_t, rc_t, dc_t, saves_t, pen_miss_takers in side_stats:
                 tgt = involved.get(tid)
                 for pid, row in tgt.items():
                     m = mins_t.get(pid, 0)
                     if m <= 0:
                         continue
                     p = 0.0
-                    p += 2 if m >= MIN_MINS_FULL else 1
-                    p += cs_t.get(pid, 0)
-                    p += _pos_points(row.get("pos", "MID"), g_count.get(pid, 0))
-                    p += ASSIST_PTS * a_count.get(pid, 0)
+                    app_pts = 2 if m >= MIN_MINS_FULL else 1
+                    p += app_pts
+                    cs_pts = cs_t.get(pid, 0)
+                    p += cs_pts
+                    goal_pts = _pos_points(row.get("pos", "MID"), g_count.get(pid, 0))
+                    p += goal_pts
+                    assist_pts = ASSIST_PTS * a_count.get(pid, 0)
+                    p += assist_pts
 
                     pos = row.get("pos", "MID")
+                    dc_pts = DC_POINTS if dc_t.get(pid) else 0.0
+                    p += dc_pts
 
-                    # DefCon points
-                    if dc_t.get(pid):
-                        p += DC_POINTS
-
-                    # GK save points (3 saves = 1 pt)
+                    save_pts = 0.0
                     if pos == "GK":
                         sv = saves_t.get(pid, 0)
                         if sv > 0:
-                            p += sv // 3
+                            save_pts = float(sv // 3)
+                            p += save_pts
 
-                    # Cards
+                    card_pts = 0.0
                     if yc_t.get(pid):
-                        p -= 1
+                        card_pts -= 1
                     if rc_t.get(pid):
-                        p -= 3
+                        card_pts -= 3
+                    p += card_pts
 
-                    # Goals conceded penalty for GK/DEF: -1 per 2 conceded
+                    gc_pts = 0.0
                     if pos in ("GK", "DEF") and m >= MIN_MINS_FULL and conceded >= 2:
-                        p -= conceded // 2
+                        gc_pts = -float(conceded // 2)
+                        p += gc_pts
+
+                    pen_miss_pts = -2.0 * float(pen_miss_takers.get(pid, 0))
+                    p += pen_miss_pts
+
+                    if return_components:
+                        comp[pid]["appearance"] += app_pts
+                        comp[pid]["clean_sheet"] += cs_pts
+                        comp[pid]["goals"] += goal_pts
+                        comp[pid]["assists"] += assist_pts
+                        comp[pid]["defcon"] += dc_pts
+                        comp[pid]["saves"] += save_pts
+                        comp[pid]["cards"] += card_pts
+                        comp[pid]["goals_conceded"] += gc_pts
+                        comp[pid]["penalty_misses"] += pen_miss_pts
 
                     pts[pid][it] += p
 
@@ -433,7 +514,7 @@ def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None):
             if not side_stats:
                 continue
             bonus_pool = {}  # pid -> weight
-            for tid, oid, mins_t, cs_t, g_count, a_count, scored, conceded, yc_t, rc_t, dc_t, saves_t in side_stats:
+            for tid, oid, mins_t, cs_t, g_count, a_count, scored, conceded, yc_t, rc_t, dc_t, saves_t, _pen_miss_takers in side_stats:
                 rt = teams[tid]
                 team_cs = conceded == 0
                 for pid in rt["rows"]:
@@ -454,12 +535,32 @@ def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None):
                         weight = tend * (1.0 + event + cs_bonus * 0.35 + dc_bonus * 0.35)
                     if weight > 0:
                         bonus_pool[pid] = bonus_pool.get(pid, 0.0) + weight
+
+            # Include untracked opponents in the bonus competition.  Without
+            # them, a one-team squad would compete for bonus against nobody
+            # and over-earn bonus points.
+            tracked_tids = {s[0] for s in side_stats}
+            for tid, _oid, _is_home, _scored, conceded in sides:
+                if tid in tracked_tids:
+                    continue
+                rt = teams.get(tid)
+                if not rt:
+                    continue
+                team_cs = conceded == 0
+                for pid in rt["rows"]:
+                    tend = rt["tend"].get(pid, 0.02)
+                    pos = rt["pos"].get(pid, "MID")
+                    cs_bonus = 4 if (team_cs and pos in ("GK", "DEF")) else (1 if (team_cs and pos == "MID") else 0)
+                    # Damped because we do not simulate this side's events.
+                    weight = tend * (1.0 + cs_bonus * 0.35)
+                    if weight > 0:
+                        bonus_pool[pid] = bonus_pool.get(pid, 0.0) + weight
             if bonus_pool:
                 ids_b = list(bonus_pool.keys())
                 wb = list(bonus_pool.values())
                 pool_b = [(pid, w) for pid, w in zip(ids_b, wb) if w > 0]
                 winners = []
-                for _ in range(N_BONUS):
+                for rank in range(N_BONUS):
                     if not pool_b:
                         break
                     tot = sum(w for _, w in pool_b)
@@ -473,13 +574,43 @@ def simulate_gw(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None):
                         if r <= acc:
                             pick_i = i
                             break
-                    winners.append(pool_b[pick_i][0])
+                    winners.append((pool_b[pick_i][0], BONUS_POINTS[rank]))
                     pool_b.pop(pick_i)
-                for pid in winners:
+                for pid, bonus in winners:
                     if pid in pts:
-                        pts[pid][it] += 1
-    return pts, played
+                        pts[pid][it] += bonus
+                        if return_components:
+                            comp[pid]["bonus"] += bonus
 
+    # The point projection is the validated mean forecast; Monte Carlo supplies
+    # the distribution around it.  Without this calibration the simulator's
+    # team-lambda/role model can produce means far from the displayed
+    # projection (e.g. 8.4 vs 4.3 for the same player), which made captain and
+    # chip EV disagree with the rest of the app.
+    try:
+        current_event = int(gd.next_event["id"])
+    except Exception:
+        current_event = None
+    if event_id is None or current_event is None or int(event_id) == current_event:
+        for r in squad_rows:
+            pid = int(r["id"])
+            try:
+                pv = float(r.get("proj"))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(pv) or pv <= 0:
+                continue
+            arr = pts.get(pid)
+            if not arr:
+                continue
+            mean_pts = sum(arr) / len(arr)
+            if mean_pts > 0:
+                scale = pv / mean_pts
+                pts[pid] = [v * scale for v in arr]
+
+    if return_components:
+        return pts, played, comp
+    return pts, played
 
 def _row_map(squad_rows):
     return {int(r["id"]): r for r in squad_rows}
@@ -526,11 +657,18 @@ def captain_analysis(gd, df, squad_rows, xi_ids=None, n=600, seed=42, event_id=N
 
     names = {int(r["id"]): (r.get("web_name"), r.get("team_short")) for r in squad_rows}
     proj_of = {int(r["id"]): float(r.get("proj") or 0) for r in squad_rows}
+    own_of = {int(r["id"]): float(r.get("selected_by") or 0) for r in squad_rows}
 
     results = []
     for ci, cid in enumerate(ids):
         ev_no_vc = sum(P[k][ci] * 2.0 * PL[k][ci] for k in range(n)) / n
         p_blank = 1.0 - sum(PL[k][ci] for k in range(n)) / n
+        p_haul = sum(
+            1.0 for k in range(n)
+            if (P[k][ci] * 2.0 * PL[k][ci]) >= 10.0
+        ) / n
+        cap_series_c = [P[k][ci] * 2.0 * PL[k][ci] for k in range(n)]
+        ev_se = float(np.std(cap_series_c) / math.sqrt(max(n, 1)))
         best_vc = None
         best_vc_ev = 0.0
         for vi, vid in enumerate(ids):
@@ -540,18 +678,46 @@ def captain_analysis(gd, df, squad_rows, xi_ids=None, n=600, seed=42, event_id=N
             if ev_vc > best_vc_ev:
                 best_vc_ev = ev_vc
                 best_vc = vid
+        if best_vc is None:
+            # Even when the captain is fully fit, the UI still needs a named
+            # vice-captain.  Pick the strongest alternative as insurance.
+            others = [vid for vid in ids if vid != cid]
+            if others:
+                best_vc = max(others, key=lambda pid: proj_of.get(pid, 0))
+        best_vc_col = ids.index(best_vc) if best_vc is not None else None
+        if best_vc_col is not None:
+            dist_series = sorted(
+                2.0 * (
+                    P[k][ci] * PL[k][ci]
+                    + P[k][best_vc_col] * PL[k][best_vc_col] * (1.0 - PL[k][ci])
+                )
+                for k in range(n)
+            )
+        else:
+            dist_series = sorted(2.0 * P[k][ci] * PL[k][ci] for k in range(n))
+        p10 = dist_series[max(0, int(n * 0.10) - 1)]
+        p50 = dist_series[max(0, int(n * 0.50) - 1)]
+        p90 = dist_series[min(n - 1, int(n * 0.90))]
         results.append({
             "id": cid,
             "web_name": names[cid][0],
             "team_short": names[cid][1],
             "proj": proj_of.get(cid, 0),
+            "model_points": round(2.0 * proj_of.get(cid, 0), 2),
+            "selected_by": round(own_of.get(cid, 0.0), 1),
             "ev_captain": round(ev_no_vc + best_vc_ev, 2),
             "ev_no_vc": round(ev_no_vc, 2),
+            "ev_se": round(ev_se, 3),
             "p_plays": round(1.0 - p_blank, 3),
             "p_blank": round(p_blank, 3),
+            "p_haul": round(p_haul, 3),
+            "p10": round(float(p10), 2),
+            "p50": round(float(p50), 2),
+            "p90": round(float(p90), 2),
             "best_vc_id": best_vc,
             "best_vc_name": names[best_vc][0] if best_vc is not None else None,
             "ev_best_vc_effect": round(best_vc_ev, 2),
+            "sim_minus_proj": round((ev_no_vc / 2.0) - float(proj_of.get(cid, 0) or 0), 2),
         })
     results.sort(key=lambda r: r["ev_captain"], reverse=True)
     top = results[0]
@@ -700,7 +866,7 @@ def simulate_squad_matrices(gd, df, squad_rows, n=600, seed=42, event_id=None, d
     }
 
 
-def optimal_lineup(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None, refine=15, sim=None):
+def optimal_lineup(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None, refine=15, sim=None, captain_basis="proj"):
     """Pick the XI + bench order maximising EV under FPL auto-sub rules.
 
     Uses one simulation of the whole squad (pass `sim` from
@@ -732,11 +898,16 @@ def optimal_lineup(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None, r
     for cand in candidates:
         bench = _default_bench(cand["bench"])
         ev = float(autosub_points(P, PL, cand["xi"], bench, pos_of).mean())
-        scored.append((ev, cand, bench))
+        # Tie-breaker: avoid naming an unavailable player in the XI when an
+        # auto-sub replacement has essentially the same EV.  This keeps the
+        # displayed XI honest (and avoids "injured player in the pitch").
+        weak_starters = int((PL[:, cand["xi"]].mean(axis=0) < 0.05).sum())
+        scored.append((ev - 0.05 * weak_starters, ev, weak_starters, cand, bench))
     scored.sort(key=lambda x: x[0], reverse=True)
 
     best = None
-    for ev0, cand, bench in scored[: max(1, refine)]:
+    best_score = float("-inf")
+    for _adj, ev0, weak, cand, bench in scored[: max(1, refine)]:
         outfield = [i for i in bench if pos_of[i] != "GK"]
         gk = [i for i in bench if pos_of[i] == "GK"]
         best_order = bench
@@ -747,7 +918,9 @@ def optimal_lineup(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None, r
             if ev > best_ev:
                 best_ev = ev
                 best_order = order
-        if best is None or best_ev > best["ev"]:
+        candidate_score = best_ev - 0.05 * weak
+        if best is None or candidate_score > best_score:
+            best_score = candidate_score
             best = {
                 "ev": best_ev,
                 "xi": cand["xi"],
@@ -764,6 +937,9 @@ def optimal_lineup(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None, r
     for ci in xi_cols:
         ev_c = float((P[:, ci] * PL[:, ci]).mean() * 2.0)
         p_blank = float((~PL[:, ci]).mean())
+        p_haul = float(((P[:, ci] * 2.0 * PL[:, ci]) >= 10.0).mean())
+        cap_series_c = P[:, ci] * 2.0 * PL[:, ci]
+        ev_se = float(cap_series_c.std() / math.sqrt(max(len(cap_series_c), 1)))
         best_vc, best_vc_ev = None, 0.0
         for vi in xi_cols:
             if vi == ci:
@@ -771,11 +947,26 @@ def optimal_lineup(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None, r
             ev_vc = float((P[:, vi] * PL[:, vi] * (~PL[:, ci])).mean() * 2.0)
             if ev_vc > best_vc_ev:
                 best_vc, best_vc_ev = vi, ev_vc
-        cap_results.append({"col": ci, "ev_captain": ev_c + best_vc_ev,
-                            "ev_no_vc": ev_c, "p_blank": p_blank,
+        if best_vc is None:
+            others = [vi for vi in xi_cols if vi != ci]
+            if others:
+                best_vc = max(others, key=lambda col: proj_of[col])
+        cap_results.append({"col": ci, "proj": proj_of[ci],
+                            "ev_captain": ev_c + best_vc_ev,
+                            "ev_no_vc": ev_c, "ev_se": ev_se,
+                            "p_blank": p_blank, "p_haul": p_haul,
                             "vc_col": best_vc, "ev_vc": best_vc_ev})
-    cap_results.sort(key=lambda r: r["ev_captain"], reverse=True)
-    cap_best = cap_results[0]
+    if captain_basis == "proj":
+        # The product decision is the highest model projection; EV remains
+        # available as a secondary risk metric.
+        cap_results.sort(key=lambda r: (r["proj"], r["ev_captain"]), reverse=True)
+        cap_best = cap_results[0]
+        others = [c for c in xi_cols if c != cap_best["col"]]
+        if others:
+            cap_best["vc_col"] = max(others, key=lambda c: proj_of[c])
+    else:
+        cap_results.sort(key=lambda r: r["ev_captain"], reverse=True)
+        cap_best = cap_results[0]
 
     # Distribution of aligned captain EV for the recommendation
     ci, vi = cap_best["col"], cap_best["vc_col"]
@@ -800,6 +991,7 @@ def optimal_lineup(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None, r
             "team_short": r.get("team_short"),
             "pos": pos_of[col],
             "proj": proj_of[col],
+            "selected_by": round(float(r.get("selected_by") or 0), 1),
             "ev": round(float((P[:, col] * PL[:, col]).mean()), 2),
             "p_play": round(float(PL[:, col].mean()), 3),
         }
@@ -817,8 +1009,12 @@ def optimal_lineup(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None, r
     cap_info = _info(ci)
     cap_info["ev_captain"] = round(cap_best["ev_captain"], 2)
     cap_info["ev_no_vc"] = round(cap_best["ev_no_vc"], 2)
+    cap_info["ev_se"] = round(cap_best.get("ev_se", 0.0), 3)
+    cap_info["model_points"] = round(2.0 * proj_of[ci], 2)
+    cap_info["basis"] = captain_basis
     cap_info["vc_name"] = squad_rows[vi].get("web_name") if vi is not None else None
     cap_info["p_blank"] = round(cap_best["p_blank"], 3)
+    cap_info["p_haul"] = round(cap_best.get("p_haul", 0.0), 3)
     vice_info = _info(vi) if vi is not None else None
 
     return {
@@ -836,7 +1032,7 @@ def optimal_lineup(gd, df, squad_rows, n=600, seed=42, event_id=None, dc=None, r
         "captain_distribution": dist,
         "candidates_top": [
             {"ev": round(ev0, 2), "formation": cand["formation"]}
-            for ev0, cand, _ in scored[:5]
+            for _adj, ev0, _weak, cand, _bench in scored[:5]
         ],
     }
 
