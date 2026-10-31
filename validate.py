@@ -22,8 +22,8 @@ def main():
 
     from fpl.reliability import adjust, load as load_rel
 
-    df = adjust(df, load_rel(gd))
-    df = df.dropna(subset=["proj"])
+    df_full = adjust(df, load_rel(gd))
+    df = df_full.dropna(subset=["proj"])
 
     squad_ids = []
     if DATA_DIR.joinpath("squad.json").exists():
@@ -33,7 +33,7 @@ def main():
             squad_ids = json.loads(DATA_DIR.joinpath("squad.json").read_text())
         except (json.JSONDecodeError, OSError):
             squad_ids = []
-    squad = squad_from_ids(df, squad_ids)
+    squad = squad_from_ids(df_full, squad_ids)
     players = [p for p in df.to_dict("records")]
     dp_total = round(sum(p["proj"] for p in squad), 2)
 
@@ -137,12 +137,12 @@ def main():
         from fpl import planner
         from fpl.horizon import player_gw_projections
 
-        state = planner.manager_state(df)
+        state = planner.manager_state(df_full)
         if state is None:
             print("    SKIP - tidak ada tim FPL tersinkron (manager.json)")
         else:
-            gw_projs = player_gw_projections(df, gd, horizon=4)
-            res = planner.plan_transfers(gd, df, state, gw_projs, horizon=4, beam_width=20)
+            gw_projs = player_gw_projections(df_full, gd, horizon=4)
+            res = planner.plan_transfers(gd, df_full, state, gw_projs, horizon=4, beam_width=20)
             info = {int(r["id"]): r for r in df.to_dict("records")}
             squad = set(res["final_squad"])
             pos_counts = {}
