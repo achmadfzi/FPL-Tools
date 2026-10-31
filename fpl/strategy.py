@@ -80,6 +80,12 @@ def squad_from_ids(df, squad_ids):
         p = by_id.get(i)
         if p is None:
             continue
+        try:
+            proj = float(p["proj"])
+        except (TypeError, ValueError):
+            proj = 0.0
+        if proj != proj:  # NaN
+            proj = 0.0
         out.append(
             {
                 "id": p["id"],
@@ -88,7 +94,7 @@ def squad_from_ids(df, squad_ids):
                 "team": int(p["team"]),
                 "pos": p["pos"],
                 "price": p["price"],
-                "proj": p["proj"] if p["proj"] else 0.0,
+                "proj": proj,
                 "photo_code": p.get("photo_code"),
             }
         )

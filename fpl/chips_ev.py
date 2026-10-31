@@ -23,7 +23,9 @@ from .simulator import optimal_lineup, simulate_squad_matrices
 
 
 def _xi_proj(squad_ids, values, pos_of):
-    return planner.xi_value(squad_ids, values, pos_of)
+    # Include the captain's extra copy so chip comparisons use the same
+    # scoring basis as the transfer planner.
+    return planner.xi_value(squad_ids, values, pos_of, captain_mult=1.0)
 
 
 def evaluate_chips(gd, df, state, gw_projs, horizon=4, n=400, seed=11):
