@@ -204,11 +204,16 @@ class GameData:
             t = self.team_indices.get(team_id, {})
             o = self.team_indices.get(opponent_id, {})
             if t and o and meta:
-                # Lambda = league avg × opponent's attack × team's GC rate
+                # Lambda = league avg × opponent's attack × team's GC rate,
+                # shrunk toward the league average by the same weight used by
+                # the fixture multiplier (early-season samples are noisy).
                 L = meta.get("L_away" if is_home else "L_home", 1.3)
-                att_opp = float(o.get("att") or 1.0) if float(o.get("att") or 0) > 0 else 1.0
-                gc_team = float(t.get("gc") or 1.0) if float(t.get("gc") or 0) > 0 else 1.0
-                return max(0.0, L * att_opp * gc_team)
+                w = min(float(t.get("w") or 0.0), float(o.get("w") or 0.0))
+                att_opp = float(o.get("att") or 1.0)
+                gc_team = float(t.get("gc") or 1.0)
+                att_eff = 1.0 + w * (att_opp - 1.0)
+                gc_eff = 1.0 + w * (gc_team - 1.0)
+                return max(0.0, L * att_eff * gc_eff)
         # Fallback: FDR-based estimate (higher FDR = stronger opponent = more goals)
         return 1.3  # league average ~1.3 goals per game
 
