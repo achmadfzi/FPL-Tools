@@ -656,7 +656,13 @@ li[role="option"]:hover, li[aria-selected="true"] {
 
 
 def apply_theme():
-    st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
+    try:
+        from .ui_simple import ACTION_CSS
+
+        extra = ACTION_CSS
+    except Exception:
+        extra = ""
+    st.markdown(f"<style>{CSS}{extra}</style>", unsafe_allow_html=True)
 
 
 def esc(s):
@@ -1039,12 +1045,20 @@ def render_sidebar_team():
 
 def autorefresh():
     try:
+        from .ui_simple import ui_mode_toggle
+    except Exception:
+        ui_mode_toggle = None
+    try:
         from streamlit_autorefresh import st_autorefresh
     except ImportError:
         render_sidebar_team()
+        if ui_mode_toggle:
+            ui_mode_toggle()
         return
 
     render_sidebar_team()
+    if ui_mode_toggle:
+        ui_mode_toggle()
 
     interval = st.sidebar.selectbox(
         "Auto-refresh data",
