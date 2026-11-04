@@ -4,9 +4,10 @@ import streamlit as st
 from fpl.gw_history import chip_impact, fetch_season_history, optimal_captain_calc
 from fpl.team import get_saved_team_id
 from fpl.ui import apply_theme, autorefresh, esc, load_data
+from fpl.ui_simple import is_beginner, simple_hero
 from fpl.utils import fmt_price
 
-st.set_page_config(page_title="GW History", layout="wide")
+st.set_page_config(page_title="Riwayat Gameweek", layout="wide")
 
 apply_theme()
 autorefresh()
@@ -14,8 +15,13 @@ autorefresh()
 gd, df = load_data()
 ev = gd.next_event
 
-st.markdown('<div class="section">Gameweek <em>History</em> & Points Timeline</div>', unsafe_allow_html=True)
-st.caption("Visualisasi perjalanan timmu sepanjang musim — rank, poin, chip impact, dan analisis kapten.")
+simple_hero(
+    "Riwayat Gameweek",
+    "Lihat perjalanan rank, poin, chip, dan keputusan kapten sepanjang musim.",
+    kicker="Riwayat · Evaluasi",
+)
+st.caption("← Kembali ke Minggu Ini lewat sidebar")
+st.caption("Grafik di halaman ini untuk evaluasi, bukan untuk mengganti keputusan minggu ini.")
 
 # --- Get Team ID ---
 saved_id = get_saved_team_id()
@@ -231,6 +237,13 @@ st.plotly_chart(fig_tf, use_container_width=True)
 st.caption("Kuning = transfer dengan hit (-4), Biru = transfer gratis.")
 
 # --- Optimal Captain Analysis ---
+if is_beginner():
+    st.info(
+        "Analisis kapten optimal dan poin bench tersedia di Mode Analis. "
+        "Untuk keputusan minggu ini, kembali ke halaman **Minggu Ini**."
+    )
+    st.stop()
+
 st.markdown('<div class="section" style="font-size:.95rem">👑 Analisis <em>Kapten Optimal</em></div>', unsafe_allow_html=True)
 st.caption(
     "Jika kamu selalu memilih pemain dengan skor tertinggi di skuadmu sebagai kapten, "

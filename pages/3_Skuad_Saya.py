@@ -20,9 +20,10 @@ from fpl.ui import (
     stat_header_html,
     transfer_card_html,
 )
+from fpl.ui_simple import is_beginner, simple_hero, simple_note
 from fpl.utils import fmt_price
 
-st.set_page_config(page_title="Team Builder", layout="wide")
+st.set_page_config(page_title="Skuad Saya", layout="wide")
 
 SQUAD_FILE = DATA_DIR / "squad.json"
 RECOMMENDED_FILE = DATA_DIR / "recommended_squad.json"
@@ -34,7 +35,13 @@ autorefresh()
 gd, df = load_data()
 ev = gd.next_event
 
-st.markdown('<div class="section">Team <em>Builder</em></div>', unsafe_allow_html=True)
+simple_hero(
+    "Skuad Saya",
+    "Susun 15 pemain, cek XI otomatis, lalu simpan. Untuk saran transfer, buka halaman Kapten & Transfer.",
+    kicker="Skuad · Bangun Tim",
+)
+st.caption("← Kembali ke Minggu Ini lewat sidebar")
+st.caption("Angka proyeksi = perkiraan poin rata-rata. Bukan jaminan; gunakan sebagai pembanding.")
 
 players = df.to_dict("records")
 by_id = {p["id"]: p for p in players}
@@ -485,6 +492,23 @@ if len(sel_new) == 15:
         result = build_lineup_result(xi_ids, bench_out_ids, bench_gk_id, squad_by_id)
         gw_projs = player_gw_projections(df, gd, 3)
 
+        # Official Scout Selection (cached; gracefully absent before release).
+        scout_bundle = None
+        scout_ids = set()
+        try:
+            from fpl.scout import latest_selection as _latest_scout
+
+            with st.spinner("Memuat Scout Selection resmi..."):
+                scout_bundle = _latest_scout(gd, int(gd.next_event["id"]))
+            if scout_bundle and scout_bundle.get("is_current"):
+                scout_ids = {
+                    int(p["element_id"])
+                    for p in scout_bundle["selection"].get("players", [])
+                }
+        except Exception:
+            scout_bundle = None
+            scout_ids = set()
+
         total_proj = result["total"]
         if result["captain"]:
             total_proj += result["captain"]["proj"]
@@ -663,6 +687,27 @@ if len(sel_new) == 15:
                     )
                 st.markdown('</div>', unsafe_allow_html=True)
 
+            if scout_bundle:
+                try:
+                    from fpl.scout import compare_selection as _compare_scout
+
+                    _sel = scout_bundle["selection"]
+                    _comp = _compare_scout(
+                        _sel,
+                        xi_ids,
+                        by_id,
+                        captain_id=(result.get("captain") or {}).get("id"),
+                        squad_ids=[int(p["id"]) for p in squad],
+                    )
+                    st.info(
+                        f"🦅 Scout GW {_sel.get('gw')}: "
+                        f"{_comp['overlap_count']}/{len(_sel.get('players', []))} pemain sama dengan XI Anda · "
+                        f"Captain Scout: {_comp['scout_captain'] or '-'}. "
+                        "Detail perbandingan ada di bawah."
+                    )
+                except Exception:
+                    pass
+
         with col_picker:
             # --- PLAYER PICKER / EXPLORER PANEL ---
             st.markdown(
@@ -710,6 +755,7 @@ if len(sel_new) == 15:
                     "Tim": p["team_short"],
                     "Pos": p["pos"],
                     "Harga": p["price"] / 10,
+                    "Scout": "SCOUT" if int(p["id"]) in scout_ids else "",
                     "Lawan": opp,
                     "FDR": p.get("fdr") if p.get("fdr") is not None else 3,
                     f"GW {cur}": p.get("proj", 0.0),
@@ -770,6 +816,7 @@ if len(sel_new) == 15:
                     pick_df.style
                     .map(lambda v: "color:#0f172a;font-weight:500", subset=["Pemain"])
                     .map(lambda v: "color:#475569;font-weight:400;text-align:center", subset=["Tim", "Lawan"])
+                    .map(lambda v: "color:#0284c7;font-weight:700;text-align:center", subset=["Scout"])
                     .map(lambda v: "color:#64748b;font-weight:400", subset=["Harga"])
                     .map(style_pos_picker, subset=["Pos"])
                     .map(style_fdr_picker, subset=["FDR"])
@@ -794,6 +841,16 @@ if len(sel_new) == 15:
                 st.info("Tidak ada pemain yang cocok dengan filter pencarian.")
 
         # --- Transfer Suggestions ---
+        if is_beginner():
+            st.divider()
+            st.markdown("### Langkah berikutnya")
+            st.caption(
+                "Mode Pemula menyembunyikan analisis transfer lanjutan di halaman ini. "
+                "Saran transfer lengkap ada di halaman Kapten & Transfer."
+            )
+            st.caption("Buka **Kapten & Transfer** dari sidebar untuk saran transfer, atau **Rencana Detail** untuk rencana lengkap.")
+            st.stop()
+
         st.divider()
         st.markdown('<div class="section" style="font-size:.95rem">Saran <em>Transfer</em> (Multi-GW Intelligence)</div>', unsafe_allow_html=True)
         st.caption("Transfer dinilai berdasarkan total gain 3 GW ke depan. Badge HIT menunjukkan efektivitas penalti transfer.")
@@ -819,6 +876,15 @@ if len(sel_new) == 15:
                 )
                 swing = fixture_swing_badge(gw_projs, best_rep["id"], horizon=3)
                 swing_html = f" <span class='fdr-badge fdr-1'>{swing}</span>" if swing else ""
+                scout_badges = ""
+                if int(best_rep["id"]) in scout_ids:
+                    scout_badges += (
+                        "<span class='fdr-badge' style='background:#0284c7;color:#fff'>SCOUT IN</span>"
+                    )
+                if int(w["id"]) in scout_ids:
+                    scout_badges += (
+                        "<span class='fdr-badge' style='background:#64748b;color:#fff'>SCOUT OUT</span>"
+                    )
                 st.html(
                     transfer_card_html(
                         w,
@@ -826,7 +892,7 @@ if len(sel_new) == 15:
                         s["player_total"],
                         best_rep["proj_total"],
                         s["gain"],
-                        extra_badges=f"{hit_badge}{swing_html}",
+                        extra_badges=f"{hit_badge}{swing_html}{scout_badges}",
                     )
                 )
         else:
@@ -844,7 +910,25 @@ if len(sel_new) == 15:
                 best_rep = cast(dict, s["reps"][0])
                 w_proj = gw_projs.get(w['id'], [0])[0]
                 rep_proj = gw_projs.get(best_rep['id'], [0])[0]
-                st.html(transfer_card_html(w, best_rep, w_proj, rep_proj, s["gain"]))
+                scout_badges = ""
+                if int(best_rep["id"]) in scout_ids:
+                    scout_badges += (
+                        "<span class='fdr-badge' style='background:#0284c7;color:#fff'>SCOUT IN</span>"
+                    )
+                if int(w["id"]) in scout_ids:
+                    scout_badges += (
+                        "<span class='fdr-badge' style='background:#64748b;color:#fff'>SCOUT OUT</span>"
+                    )
+                st.html(
+                    transfer_card_html(
+                        w,
+                        best_rep,
+                        w_proj,
+                        rep_proj,
+                        s["gain"],
+                        extra_badges=scout_badges,
+                    )
+                )
         else:
             st.info("Tidak ada transfer yang menguntungkan untuk 1 GW ke depan.")
 
@@ -899,6 +983,116 @@ if len(sel_new) == 15:
             st.markdown("<div class='info-line'><b>Perhatian — kandidat transfer:</b></div>", unsafe_allow_html=True)
             for p, fut in risky:
                 st.write(f"**{p['web_name']}** ({p['team_short']}) — proyeksi GW2+GW3 hanya {fut:.2f} pts")
+
+        # ------------------------------------------------------------------
+        # Official Scout Selection comparison
+        # ------------------------------------------------------------------
+        from fpl.scout import compare_selection, load_articles
+
+        st.markdown('<div class="section">🦅 Scout <em>Selection</em> Resmi</div>', unsafe_allow_html=True)
+        if scout_bundle is None:
+            st.info(
+                "Scout Selection resmi belum tersedia. Artikel biasanya terbit mendekati deadline; "
+                "coba lagi nanti atau muat ulang."
+            )
+        else:
+            sel = scout_bundle["selection"]
+            requested_gw = scout_bundle.get("requested_gw")
+            is_current = bool(scout_bundle.get("is_current"))
+            if not is_current:
+                st.warning(
+                    f"Scout Selection GW {requested_gw} belum dirilis. "
+                    f"Menampilkan edisi terakhir: **GW {sel.get('gw')}**."
+                )
+
+            auto_xi_ids, _, _ = default_lineup(auto_result)
+            squad_ids_for_compare = [int(p["id"]) for p in squad]
+            comp = compare_selection(
+                sel,
+                xi_ids,
+                by_id,
+                captain_id=(result.get("captain") or {}).get("id"),
+                squad_ids=squad_ids_for_compare,
+            )
+            auto_comp = compare_selection(
+                sel,
+                auto_xi_ids,
+                by_id,
+                captain_id=(auto_result.get("captain") or {}).get("id"),
+                squad_ids=squad_ids_for_compare,
+            )
+
+            count = len(sel.get("players", []))
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Kesamaan XI Anda", f"{comp['overlap_count']}/{count}", f"{comp['agreement_pct']:.0f}%")
+            c2.metric("Kesamaan Auto XI", f"{auto_comp['overlap_count']}/{count}")
+            c3.metric("Proyeksi Scout", f"{comp['scout_total']:.1f} pts")
+            c4.metric("Proyeksi XI Anda", f"{comp['user_total']:.1f} pts", f"{comp['user_total'] - comp['scout_total']:+.1f}")
+            c5.metric(
+                "Captain",
+                "Sama" if comp["captain_match"] else "Beda",
+                f"S: {comp['scout_captain'] or '-'} · A: {comp['user_captain'] or '-'}",
+            )
+
+            date_txt = (sel.get("date") or "")[:10]
+            source_url = sel.get("url") or ""
+            source_txt = f" · [Buka artikel resmi]({source_url})" if source_url else ""
+            st.caption(
+                f"Formasi **{sel.get('formation') or '-'}** · {date_txt} · "
+                f"Captain Scout: **{comp['scout_captain'] or '-'}** · Wakil: "
+                f"**{by_id.get(sel.get('vice_id'), {}).get('web_name', '-') if sel.get('vice_id') else '-'}**"
+                f"{source_txt}"
+            )
+
+            xi_set = {int(p["id"]) for p in result["xi"]}
+            bench_set = {int(p["id"]) for p in result["bench"]}
+            squad_set = {int(p["id"]) for p in squad}
+            scout_rows = []
+            for p in sel.get("players", []):
+                pid = int(p["element_id"])
+                player = by_id.get(pid, {})
+                if pid in xi_set:
+                    status = "XI Anda"
+                elif pid in bench_set:
+                    status = "Bench Anda"
+                elif pid in squad_set:
+                    status = "Skuad Anda"
+                else:
+                    status = "Belum dimiliki"
+                mark = "C" if pid == sel.get("captain_id") else ("V" if pid == sel.get("vice_id") else "")
+                scout_rows.append({
+                    "Posisi": p.get("pos", "-"),
+                    "Pemain": player.get("web_name", p.get("name", "-")),
+                    "Tim": player.get("team_short", p.get("team", "-")),
+                    "Harga": by_id.get(pid, {}).get("price", p.get("price", 0)) / 10,
+                    "Proyeksi": round(float(player.get("proj") or 0), 2),
+                    "Status": status,
+                    "Peran": mark,
+                })
+            if scout_rows:
+                scout_df = pd.DataFrame(scout_rows)
+                status_order = {"XI Anda": 0, "Bench Anda": 1, "Skuad Anda": 2, "Belum dimiliki": 3}
+                scout_df["_order"] = scout_df["Status"].map(status_order).fillna(9)
+                scout_df = scout_df.sort_values(["_order", "Posisi"]).drop(columns=["_order"])
+                st.dataframe(scout_df, use_container_width=True, hide_index=True)
+
+            def _names(ids):
+                names = [by_id[i]["web_name"] for i in ids if i in by_id]
+                return ", ".join(names) if names else "-"
+
+            st.markdown(
+                f"**Hanya Scout:** {_names(comp['only_scout_ids'])}  \n"
+                f"**Hanya XI Anda:** {_names(comp['only_user_ids'])}"
+            )
+            if comp["not_owned_ids"]:
+                st.info("Scout watchlist (belum ada di skuad): " + _names(comp["not_owned_ids"]))
+            if sel.get("unresolved"):
+                names = ", ".join(u.get("raw_name", "?") for u in sel["unresolved"])
+                st.warning(f"Nama Scout yang belum terpetakan ke FPL: {names}")
+
+            if st.button("🔄 Ambil ulang Scout Selection", key="scout_refresh_btn"):
+                load_articles(gd, force=True)
+                st.rerun()
 
     else:
         st.warning("Skuad belum valid. Pastikan 15 pemain dengan 2 GK, 5 DEF, 5 MID, 3 FWD.")

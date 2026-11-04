@@ -4,8 +4,9 @@ import streamlit as st
 
 from fpl.accuracy import compute_accuracy, history, suggested_weights
 from fpl.ui import apply_theme, autorefresh, esc, load_data
+from fpl.ui_simple import is_beginner, simple_hero, simple_note
 
-st.set_page_config(page_title="Akurasi Model", layout="wide")
+st.set_page_config(page_title="Performa & Akurasi", layout="wide")
 
 apply_theme()
 autorefresh()
@@ -13,10 +14,15 @@ autorefresh()
 gd, df = load_data()
 ev = gd.next_event
 
-st.markdown('<div class="section">Akurasi <em>Model</em> Proyeksi</div>', unsafe_allow_html=True)
+simple_hero(
+    "Performa & Akurasi",
+    "Seberapa sering model meleset, dan apakah model membaik sepanjang musim.",
+    kicker="Model · Ringkasan",
+)
+st.caption("← Kembali ke Minggu Ini lewat sidebar")
 st.caption(
-    "Evaluasi seberapa akurat model proyeksi dibanding skor aktual FPL. "
-    "Proyeksi disimpan otomatis setiap GW. Setelah GW selesai, skor aktual diambil dari API FPL."
+    "Di Mode Pemula, halaman ini hanya menampilkan ringkasan. "
+    "Ubah Tampilan ke Analis untuk melihat MAE/RMSE, top-K, kalibrasi, ML, dan backtest."
 )
 
 # Try to compute accuracy for past GWs that have actuals
@@ -56,10 +62,20 @@ else:
     avg_mae = sum(maes) / len(maes)
     avg_rmse = sum(rmses) / len(rmses)
     latest = completed[-1]
-    c1.metric("MAE Rata-rata", f"{avg_mae:.2f}", f"{len(completed)} GW data")
-    c2.metric("RMSE Rata-rata", f"{avg_rmse:.2f}")
-    c3.metric("MAE Terakhir", f"{latest['metrics']['mae']:.2f}", f"GW {latest['gw']}")
-    c4.metric("GW Terevaluasi", f"{len(completed)}", f"dari {len(hist)} tersimpan")
+    if is_beginner():
+        c1.metric("Rata-rata meleset", f"{avg_mae:.2f} poin", f"{len(completed)} GW data")
+        c2.metric("Meleset besar (RMSE)", f"{avg_rmse:.2f}")
+        c3.metric("Meleset GW terakhir", f"{latest['metrics']['mae']:.2f}", f"GW {latest['gw']}")
+    else:
+        c1.metric("MAE Rata-rata", f"{avg_mae:.2f}", f"{len(completed)} GW data")
+        c2.metric("RMSE Rata-rata", f"{avg_rmse:.2f}")
+        c3.metric("MAE Terakhir", f"{latest['metrics']['mae']:.2f}", f"GW {latest['gw']}")
+    c4.metric("GW terevaluasi", f"{len(completed)}", f"dari {len(hist)} tersimpan")
+    simple_note(
+        f"Artinya: satu proyeksi pemain biasanya meleset sekitar <b>{avg_mae:.1f} poin</b>. "
+        "Untuk kapten, errornya biasanya lebih besar karena hanya memilih pemain teratas. "
+        "Gunakan angka ini sebagai batas ketidakpastian, bukan sebagai jaminan."
+    )
 
     # --- Trend Chart ---
     st.markdown('<div class="section" style="font-size:.95rem">Tren <em>Akurasi</em> Sepanjang Musim</div>', unsafe_allow_html=True)
@@ -82,7 +98,18 @@ else:
         legend=dict(orientation="h", y=1.08),
     )
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("MAE = rata-rata selisih absolut proyeksi vs aktual. RMSE = akar rata-rata kuadrat error (lebih sensitif terhadap error besar).")
+    st.caption(
+        "MAE = rata-rata meleset. RMSE = rata-rata meleset yang lebih menghukum error besar. "
+        "Semakin kecil, semakin baik."
+    )
+    if is_beginner():
+        st.markdown("### Mau lihat lebih dalam?")
+        st.caption(
+            "Detail top-K, kalibrasi, ML, dan backtest disembunyikan di Mode Pemula. "
+            "Ubah Tampilan ke **Analis** di sidebar untuk membukanya."
+        )
+        st.caption("Buka **Riwayat Gameweek** dari sidebar untuk grafik rank, poin, chip, dan kapten.")
+        st.stop()
 
     # --- Per GW Table ---
     st.markdown('<div class="section" style="font-size:.95rem">Detail <em>Per Gameweek</em></div>', unsafe_allow_html=True)
@@ -107,6 +134,80 @@ else:
         .hide(axis="index")
     )
     st.dataframe(styled_acc, use_container_width=True, hide_index=True)
+
+    # --- Decision-relevant metrics (top-K, bias, calibration) ---
+    latest_m = latest.get("metrics") or {}
+    if latest_m.get("top_k"):
+        st.markdown('<div class="section" style="font-size:.95rem">Metrik <em>Keputusan</em> — Top-K & Kalibrasi</div>', unsafe_allow_html=True)
+        st.caption(
+            "MAE seluruh pemain bisa terlihat baik sementara 10-20 pemain teratas — yang benar-benar "
+            "dipakai untuk kapten/transfer — bias. Metrik di bawah mengukur bagian itu."
+        )
+        k_rows = []
+        for k, v in sorted(latest_m["top_k"].items(), key=lambda kv: int(kv[0])):
+            k_rows.append({
+                "Top-K": f"Top {k}",
+                "MAE": v["mae"],
+                "Bias": v["bias"],
+                "Proyeksi rata-rata": v["mean_proj"],
+                "Aktual rata-rata": v["mean_actual"],
+            })
+        st.dataframe(pd.DataFrame(k_rows), use_container_width=True, hide_index=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Bias keseluruhan", f"{latest_m.get('bias', 0):+.2f} pts")
+        c2.metric("Spearman (ranking)", f"{latest_m.get('spearman') if latest_m.get('spearman') is not None else '-'}")
+        cap = latest_m.get("captain") or {}
+        c3.metric("Captain regret", f"{cap.get('regret', 0):+.1f} pts",
+                  help="Poin aktual kapten terbaik di pool proyeksi dikurangi poin pemain teratas proyeksi.")
+
+        deciles = latest_m.get("deciles") or []
+        if deciles:
+            fig_cal = go.Figure()
+            fig_cal.add_trace(go.Scatter(
+                x=[d["proj"] for d in deciles],
+                y=[d["actual"] for d in deciles],
+                mode="lines+markers", name="Aktual vs proyeksi",
+                line=dict(color="#37003c", width=3),
+            ))
+            max_v = max(max(d["proj"], d["actual"]) for d in deciles) if deciles else 10
+            fig_cal.add_trace(go.Scatter(
+                x=[0, max_v], y=[0, max_v], mode="lines", name="Ideal (y=x)",
+                line=dict(color="#94a3b8", dash="dash"),
+            ))
+            fig_cal.update_layout(
+                xaxis_title="Proyeksi", yaxis_title="Aktual",
+                height=300, paper_bgcolor="#fff", plot_bgcolor="#f8f9fb",
+                font=dict(color="#1a1a2e", size=11),
+                margin=dict(l=10, r=10, t=10, b=10),
+            )
+            st.plotly_chart(fig_cal, use_container_width=True)
+            st.caption("Jika titik top decile berada di bawah garis ideal, model terlalu optimis untuk pemain mahal/top.")
+
+    # --- Baseline comparison / small backtest ---
+    try:
+        from fpl.backtest import compare_baselines
+
+        comparison = compare_baselines()
+        if comparison:
+            st.markdown('<div class="section" style="font-size:.95rem">Backtest <em>Baseline</em> — Apakah Model Menang?</div>', unsafe_allow_html=True)
+            st.caption(
+                "Perbandingan pada sampel historis yang sama. Model harus mengalahkan baseline sederhana "
+                "secara out-of-sample sebelum bobot/fitur baru dipromosikan."
+            )
+            comp_rows = []
+            for c in comparison:
+                comp_rows.append({
+                    "Model": c["model"],
+                    "N": c["n"],
+                    "MAE": c["mae"],
+                    "RMSE": c["rmse"],
+                    "Bias": c["bias"],
+                    "Top-10 MAE": (c.get("top10") or {}).get("mae"),
+                    "Top-10 Bias": (c.get("top10") or {}).get("bias"),
+                })
+            st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
+    except Exception as exc:
+        st.caption(f"Backtest baseline belum tersedia: {exc}")
 
     # --- Breakdown by Position ---
     st.markdown('<div class="section" style="font-size:.95rem">Akurasi <em>Per Posisi</em></div>', unsafe_allow_html=True)
@@ -195,8 +296,9 @@ else:
 # =============================================================================
 st.markdown('<div class="section">🎯 Kalibrasi <em>Proyeksi</em> — Koreksi Bias Sistematis</div>', unsafe_allow_html=True)
 st.caption(
-    "Mencocokkan proyeksi model dengan poin aktual per posisi (actual ≈ a + b × proyeksi) dan hanya "
-    "mengaktifkan koreksi bila lolos uji *leave-one-Gameweek-out* (MAE membaik ≥ 0.5%). "
+    "Membandingkan dua koreksi monotonik: linear per posisi (actual ≈ a + b × proyeksi) dan "
+    "*top-end shrink* (proyeksi di atas ambang dikompresi). Metode dipilih lewat uji "
+    "*leave-one-Gameweek-out*; koreksi hanya AKTIF bila MAE membaik ≥ 0.5%. "
     "Kalibrasi memakai proyeksi mentah sebagai input, sehingga tidak terjadi umpan balik."
 )
 
@@ -234,10 +336,18 @@ try:
             else:
                 st.metric("Sampel", f"{m.get('n', 0)} proyeksi")
         if m.get("by_pos"):
-            with st.expander("Koefisien per posisi (a = intersep, b = kemiringan)"):
+            with st.expander("Koefisien per posisi"):
                 for pos, prm in sorted(m["by_pos"].items()):
-                    st.write(f"  **{pos}**: actual ≈ {prm['a']:+.3f} + {prm['b']:.3f} × proyeksi  (n={prm['n']})")
-        if not m["enabled"]:
+                    if "t" in prm:
+                        st.write(
+                            f"  **{pos}**: proyeksi > {prm['t']:.2f} dikompresi "
+                            f"× {prm['f']:.2f} (n={prm['n']})"
+                        )
+                    else:
+                        st.write(f"  **{pos}**: actual ≈ {prm['a']:+.3f} + {prm['b']:.3f} × proyeksi  (n={prm['n']})")
+        if m["enabled"]:
+            st.caption(f"Metode aktif: **{m.get('method', 'linear')}** · hanya diterapkan karena lolos validasi out-of-sample.")
+        else:
             st.caption("Koreksi hanya diterapkan saat terbukti membaik di data yang belum dilihat (anti-overfit).")
     else:
         st.caption("Belum ada hasil kalibrasi tersimpan — klik **Fit Kalibrasi**.")
@@ -278,17 +388,30 @@ try:
             if result["status"] == "insufficient_data":
                 st.warning(result["message"])
             else:
+                enabled = bool(result.get("enabled", False))
                 saved = save_tuned_weights(result["weights"], {
                     "default_mae": result["default_mae"],
                     "tuned_mae": result["tuned_mae"],
                     "improvement_pct": result["improvement_pct"],
+                    "validation_default_mae": result.get("validation_default_mae"),
+                    "validation_tuned_mae": result.get("validation_tuned_mae"),
+                    "validation_improvement_pct": result.get("validation_improvement_pct"),
                     "n_samples": result["n_samples"],
-                    "enabled": True,
+                    "n_validation": result.get("n_validation", 0),
+                    "enabled": enabled,
                 })
-                st.success(
-                    f"Bobot optimal ditemukan! MAE: {result['default_mae']:.3f} → {result['tuned_mae']:.3f} "
-                    f"(improvement {result['improvement_pct']:+.1f}%). {result['n_combos_tested']} kombinasi diuji."
-                )
+                if enabled:
+                    st.success(
+                        f"Bobot optimal ditemukan! MAE train: {result['default_mae']:.3f} → {result['tuned_mae']:.3f} "
+                        f"({result['improvement_pct']:+.1f}%). Validasi holdout: "
+                        f"{(result.get('validation_improvement_pct') or 0):+.2f}%."
+                    )
+                else:
+                    st.warning(
+                        "Bobot belum diaktifkan: hasil holdout belum cukup baik. "
+                        f"MAE train {result['default_mae']:.3f} → {result['tuned_mae']:.3f}, "
+                        f"validasi {(result.get('validation_improvement_pct') or 0):+.2f}%."
+                    )
                 st.rerun()
 
     with c2:
@@ -316,7 +439,7 @@ try:
             <div class="fpl-card">
               <h3>{status_icon} Bobot Tuned {'(Aktif)' if metrics.get('enabled') else '(Nonaktif)'}</h3>
               <div class="info-line">MAE Default: <b>{metrics.get('default_mae', '-')}</b> → Tuned: <b style="color:#15803d">{metrics.get('tuned_mae', '-')}</b></div>
-              <div class="info-line">Improvement: <b style="color:#37003c">{metrics.get('improvement_pct', 0):+.1f}%</b> | Data: {metrics.get('n_samples', 0)} sample</div>
+              <div class="info-line">Improvement: <b style="color:#37003c">{metrics.get('improvement_pct') if metrics.get('improvement_pct') is not None else 0:+.1f}%</b> | Data: {metrics.get('n_samples', 0)} sample</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -367,22 +490,29 @@ try:
             if result["status"] == "insufficient_data":
                 st.warning(result["message"])
             else:
-                st.success(
-                    f"Model ML berhasil di-train! {result['n_samples']} sample. "
+                msg = (
+                    f"Model ML di-train dengan {result['n_samples']} sample / {result.get('n_gws', '-')} GW. "
                     f"GBR MAE: {result['gbr_mae']:.3f} vs Formula MAE: {result['formula_mae']:.3f} "
-                    f"(improvement {result['improvement_pct']:+.1f}%)"
+                    f"({result['improvement_pct']:+.1f}%)."
                 )
+                if result.get("enabled"):
+                    st.success(msg + " Model diaktifkan karena menang out-of-sample.")
+                else:
+                    st.warning(msg + " Model TIDAK diaktifkan karena belum mengalahkan formula.")
                 st.rerun()
 
     with c2:
         if status["available"]:
+            enabled = bool(status.get("enabled"))
+            color = "#15803d" if enabled else "#b45309"
+            label = "Model ML Aktif" if enabled else "Model ML Eksperimental (nonaktif)"
             st.markdown(
                 f"""
                 <div style="display:flex;gap:16px;align-items:center;padding:8px 0">
-                  <span style="font-size:1.2rem">🟢</span>
+                  <span style="font-size:1.2rem">{'🟢' if enabled else '🟡'}</span>
                   <div>
-                    <div style="font-weight:600;color:#15803d">Model ML Aktif</div>
-                    <div style="font-size:.8rem;color:#64748b">{status['n_samples']} training samples</div>
+                    <div style="font-weight:600;color:{color}">{label}</div>
+                    <div style="font-size:.8rem;color:#64748b">{status.get('n_samples', 0)} training samples · {status.get('n_gws', '-')} GW</div>
                   </div>
                 </div>
                 """,
@@ -391,11 +521,14 @@ try:
 
     if status["available"]:
         c1, c2, c3 = st.columns(3)
-        c1.metric("Formula MAE", f"{status['formula_mae']:.3f}", "baseline")
-        c2.metric("ML (GBR) MAE", f"{status['gbr_mae']:.3f}",
-                   f"{status['improvement_pct']:+.1f}%",
-                   delta_color="inverse" if status["improvement_pct"] > 0 else "normal")
-        c3.metric("Training Samples", status["n_samples"])
+        formula_mae = status.get("formula_mae")
+        gbr_mae = status.get("gbr_mae")
+        improvement = status.get("improvement_pct")
+        c1.metric("Formula MAE", f"{formula_mae:.3f}" if formula_mae is not None else "-", "baseline")
+        c2.metric("ML (GBR) MAE", f"{gbr_mae:.3f}" if gbr_mae is not None else "-",
+                   f"{improvement:+.1f}%" if improvement is not None else "-",
+                   delta_color="inverse" if (improvement or 0) > 0 else "normal")
+        c3.metric("Training Samples", status.get("n_samples", 0))
 
         # Feature importance chart
         importances = status.get("importances", {})

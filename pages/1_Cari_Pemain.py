@@ -17,9 +17,10 @@ from fpl.ui import (
     pos_badge_html,
     status_badge_html,
 )
+from fpl.ui_simple import is_beginner, simple_hero, simple_note
 from fpl.utils import fmt_price
 
-st.set_page_config(page_title="Player Explorer", layout="wide")
+st.set_page_config(page_title="Cari Pemain", layout="wide")
 
 apply_theme()
 autorefresh()
@@ -31,8 +32,13 @@ from fpl.paststats import attach, indicator as past_indicator, load as load_past
 with st.spinner("Memuat statistik musim lalu..."):
     df = attach(df, load_past(gd))
 
-st.markdown('<div class="section">Player <em>Explorer</em></div>', unsafe_allow_html=True)
-st.caption("Jelajahi semua pemain, filter, dan lihat detail proyeksi poin.")
+simple_hero(
+    "Cari Pemain",
+    "Filter pemain, cari value/diferensial, lalu klik satu pemain untuk melihat alasannya.",
+    kicker="Pemain · Cari & Bandingkan",
+)
+st.caption("← Kembali ke Minggu Ini lewat sidebar")
+st.caption("Angka proyeksi = perkiraan poin rata-rata. Kolom detail bisa disembunyikan agar tabel lebih mudah dibaca.")
 
 c1, c2, c3, c4 = st.columns(4)
 with c1:
@@ -99,20 +105,29 @@ with c1:
     )
 with c2:
     ascending = st.checkbox("Urutkan naik", value=False)
+    show_details = st.checkbox(
+        "Tampilkan kolom detail",
+        value=not is_beginner(),
+        help="xGI, DefCon, form, kepemilikan, peluang main, dll.",
+    )
 
 view = view.sort_values(sort_col, ascending=ascending)
 
-# Build display table
+# Build display table. Beginner mode keeps the table to the columns needed
+# for a decision; analysts can reveal everything.
 has_ml = "ml_proj" in view.columns and view["ml_proj"].notna().any()
-cols = ["web_name", "team_short", "pos", "price", "proj"]
-if has_ml:
-    cols.append("ml_proj")
-cols += ["xGI_per90", "dc_prob", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance_this", "chance_next", "status"]
-
-col_names = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi"]
-if has_ml:
-    col_names.append("ML Proj")
-col_names += ["xGI/90", "DC%", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang Kini", "Peluang Depan", "Status"]
+if show_details:
+    cols = ["web_name", "team_short", "pos", "price", "proj"]
+    if has_ml:
+        cols.append("ml_proj")
+    cols += ["xGI_per90", "dc_prob", "last_points", "last_ppg", "form", "ppg", "selected_by", "opponent_short", "fdr", "chance_this", "chance_next", "status"]
+    col_names = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi"]
+    if has_ml:
+        col_names.append("ML Proj")
+    col_names += ["xGI/90", "DC%", "Poin Lalu", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "FDR", "Peluang Kini", "Peluang Depan", "Status"]
+else:
+    cols = ["web_name", "team_short", "pos", "price", "proj", "opponent_short", "fdr", "status"]
+    col_names = ["Pemain", "Tim", "Pos", "Harga", "Proyeksi", "Lawan", "FDR", "Status"]
 
 # Keep only columns actually available in the projection table (defensive:
 # DefCon columns are attached best-effort).
@@ -172,8 +187,11 @@ def fmt_dc(v):
         return "-"
 
 
-style_subsets = ["Pemain", "Tim", "xGI/90", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "Peluang Kini", "Peluang Depan", "DC%"]
-proj_subsets = ["Proyeksi"]
+style_subsets = [
+    c for c in ["Pemain", "Tim", "xGI/90", "PPG Lalu", "Form", "PPG", "Kepemilikan", "Lawan", "Peluang Kini", "Peluang Depan", "DC%"]
+    if c in show.columns
+]
+proj_subsets = ["Proyeksi"] if "Proyeksi" in show.columns else []
 format_dict = {
     "Harga": "£{:.1f}m",
     "Proyeksi": "{:.2f}",
@@ -192,18 +210,18 @@ if has_ml:
     format_dict["ML Proj"] = "{:.2f}"
     proj_subsets.append("ML Proj")
 
-styled = (
-    show.style
-    .map(lambda v: "color:#0f172a;font-weight:400", subset=style_subsets)
-    .map(lambda v: "color:#64748b;font-weight:400", subset=["Harga"])
-    .map(style_pos, subset=["Pos"])
-    .map(style_fdr, subset=["FDR"])
-    .map(style_status, subset=["Status"])
-    .map(lambda v: "color:#d97706;font-weight:500", subset=["Poin Lalu"])
-    .map(lambda v: "color:#37003c;font-weight:600", subset=proj_subsets)
-    .format(format_dict)
-    .hide(axis="index")
-)
+styled = show.style
+if style_subsets:
+    styled = styled.map(lambda v: "color:#0f172a;font-weight:400", subset=style_subsets)
+styled = styled.map(lambda v: "color:#64748b;font-weight:400", subset=["Harga"])
+styled = styled.map(style_pos, subset=["Pos"])
+styled = styled.map(style_fdr, subset=["FDR"])
+styled = styled.map(style_status, subset=["Status"])
+if "Poin Lalu" in show.columns:
+    styled = styled.map(lambda v: "color:#d97706;font-weight:500", subset=["Poin Lalu"])
+if proj_subsets:
+    styled = styled.map(lambda v: "color:#37003c;font-weight:600", subset=proj_subsets)
+styled = styled.format(format_dict).hide(axis="index")
 
 st.dataframe(styled, use_container_width=True, height=520, hide_index=True)
 

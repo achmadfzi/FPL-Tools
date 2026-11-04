@@ -17,9 +17,10 @@ from fpl.strategy import (
     wc_estimate,
 )
 from fpl.ui import apply_theme, autorefresh, esc, load_data, player_card_html
+from fpl.ui_simple import action_card, is_beginner, simple_hero, simple_note
 from fpl.utils import fmt_deadline_wib, fmt_price
 
-st.set_page_config(page_title="Chip Strategi", layout="wide")
+st.set_page_config(page_title="Chip & Lab", layout="wide")
 
 apply_theme()
 autorefresh()
@@ -28,14 +29,15 @@ gd, df = load_data()
 ev = gd.next_event
 bpt = best_player_per_team(df)
 
-st.markdown('<div class="section">Chip <em>Strategi</em></div>', unsafe_allow_html=True)
-st.caption(
-    "Kapan waktu terbaik menggunakan Triple Captain (TC), Bench Boost (BB), "
-    "Wildcard (WC), dan Free Hit (FH) — berbasis jadwal DGW, BGW, dan proyeksi poin."
+simple_hero(
+    "Chip & Lab",
+    "Kapan sebaiknya memakai TC, BB, WC, dan FH — plus alat analisis lanjutan.",
+    kicker="Chip · Perencanaan",
 )
-st.info(
-    "💡 Estimasi **EV chip untuk GW ini** (TC/BB/FH/WC berbasis Monte Carlo + perbandingan skuad nyata) "
-    "ada di halaman **🎯 Rencana Aksi**. Halaman ini fokus pada perencanaan jangka panjang & kalender DGW/BGW."
+st.caption("← Kembali ke Minggu Ini lewat sidebar")
+st.caption(
+    "Di Mode Pemula, halaman ini hanya menampilkan rekomendasi chip dan kalender. "
+    "Skor kelayakan, simulasi, dan detail lain ada di Mode Analis."
 )
 
 with st.expander("Aturan chip yang perlu diketahui"):
@@ -71,6 +73,92 @@ with st.expander("Kalender DGW / Blank GW (jadwal penuh musim ini)"):
             dgw = ", ".join(gd.teams_by_id[t]["short_name"] for t in g["dgw_ids"])
             bgw = ", ".join(gd.teams_by_id[t]["short_name"] for t in g["bgw_ids"])
             st.write(f"GW {g['event']}: DGW = {dgw or '-'} | BGW = {bgw or '-'}")
+
+# --- Season-aware chip calendar (new) ---
+st.markdown('<div class="section" style="font-size:.95rem">📅 Kalender <em>Chip</em> — 12 GW ke Depan</div>', unsafe_allow_html=True)
+st.caption(
+    "Menggabungkan jadwal DGW/BGW, proyeksi pemain per GW, dan skuad tersimpan. "
+    "Gunakan sebagai peta awal; konfirmasi EV chip GW ini di halaman **Minggu Ini** atau **Rencana Detail**."
+)
+cc = None
+try:
+    from fpl import planner
+    from fpl.chip_calendar import build_chip_calendar
+    from fpl.simulator import load_saved_squad
+
+    chip_state = planner.manager_state(df, current_gw=ev["id"])
+    if chip_state is None:
+        _rows, _xi, _src = load_saved_squad(df)
+        if _rows:
+            chip_state = {
+                "squad_ids": [int(r["id"]) for r in _rows],
+                "squad_rows": _rows,
+                "bank": 0,
+                "sell_prices": {int(r["id"]): int(r["price"]) for r in _rows},
+                "free_transfers": 1,
+                "chips": planner.chips_availability([], int(ev["id"])),
+            }
+    if chip_state is None:
+        st.info("Belum ada skuad 15 pemain tersimpan. Simpan skuad di halaman Skuad Saya agar kalender chip bisa dihitung.")
+    else:
+        with st.spinner("Menghitung kalender chip 12 GW..."):
+            cc = build_chip_calendar(gd, df, chip_state, horizon=12)
+
+        if cc.get("calendar"):
+            first = cc["calendar"][0]
+            action_card(
+                "REKOMENDASI CHIP",
+                f"{first['chip']} → GW {first['gw']}",
+                f"{first['score']:.1f}", "estimasi gain",
+                "Ini momen terbaik menurut jadwal dan proyeksi saat ini. Konfirmasi ulang menjelang deadline.",
+                "Sedang", "warn", "Satu chip per Gameweek.",
+            )
+        else:
+            action_card(
+                "REKOMENDASI CHIP",
+                "Simpan chip",
+                "Belum ada momen mendesak",
+                None,
+                "Belum ada Double/Blank Gameweek yang jelas.",
+                "Tinggi", "good", "Set pertama hangus GW19.",
+            )
+
+        if cc.get("by_gw") and not is_beginner():
+            cc_rows = []
+            for row in cc["by_gw"]:
+                cc_rows.append({
+                    "GW": row["gw"],
+                    "TC": row["tc"],
+                    "BB": row["bb"],
+                    "FH": row["fh"],
+                    "WC": row["wc"],
+                    "DGW": ", ".join(gd.teams_by_id[t]["short_name"] for t in row["dgw"]) or "-",
+                    "BGW": ", ".join(gd.teams_by_id[t]["short_name"] for t in row["bgw"]) or "-",
+                })
+            st.dataframe(pd.DataFrame(cc_rows), use_container_width=True, hide_index=True)
+        if cc.get("calendar"):
+            st.markdown("**Rencana chip**")
+            for c in cc["calendar"]:
+                extra = []
+                if c.get("dgw"):
+                    extra.append("DGW: " + ", ".join(gd.teams_by_id[t]["short_name"] for t in c["dgw"]))
+                if c.get("bgw"):
+                    extra.append("BGW: " + ", ".join(gd.teams_by_id[t]["short_name"] for t in c["bgw"]))
+                st.write(
+                    f"**{c['chip']} → GW {c['gw']}** · estimasi gain {c['score']:.2f}"
+                    + (" · " + " · ".join(extra) if extra else "")
+                )
+        if cc.get("chips", {}).get("available_now"):
+            st.caption(f"Chip tersedia sekarang: {', '.join(cc['chips']['available_now'])} · set pertama hangus GW19.")
+except Exception as exc:
+    st.caption(f"Kalender chip belum bisa dihitung: {exc}")
+
+if is_beginner():
+    simple_note(
+        "Skor kelayakan per Gameweek, simulasi chip, dan analisis TC/BB/WC/FH detail "
+        "tersedia di <b>Mode Analis</b>. Untuk keputusan minggu ini, cukup gunakan kartu di atas."
+    )
+    st.stop()
 
 # --- Skor Kelayakan Semua Chip ---
 st.markdown('<div class="section">Skor <em>Kelayakan</em> Chip per Gameweek</div>', unsafe_allow_html=True)
@@ -293,7 +381,7 @@ with c2:
             )
     else:
         st.info(
-            "Simpan skuad 15 pemain dulu (Team Builder > Simpan Tim, atau jalankan `python recommend.py`) "
+            "Simpan skuad 15 pemain dulu (Skuad Saya > Simpan Tim, atau jalankan `python recommend.py`) "
             "agar analisis BB bisa dihitung dari skuad Anda."
         )
 
