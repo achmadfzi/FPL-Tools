@@ -2,16 +2,28 @@
 
 Tools bantu bermain Fantasy Premier League (FPL) berbasis data publik resmi FPL API. Membantu Anda memilih kapten, menentukan transfer, dan mengoptimasi line-up setiap Gameweek.
 
+> **UI baru (React + shadcn/ui):** dashboard baru ada di `web/` dan backend FastAPI di `api/`. Jalankan:
+>
+> ```bash
+> .venv/bin/pip install -r requirements.txt
+> ./scripts/run_web.sh
+> ```
+>
+> Buka **http://localhost:8000**. Streamlit lama tetap tersedia di **http://localhost:8501**.
+>
+> Sidebar utama: **Minggu Ini · Skuad Saya · Cari Pemain · Performa · Lab & Chip**. Default **Mode Pemula** hanya menampilkan keputusan + alasan singkat; **Mode Analis** membuka semua angka. Istilah dijelaskan di **Kamus FPL**.
+
 ## Fitur
 
-- **🎯 Rencana Aksi (halaman baru)** - semua keputusan GW ini dalam satu layar: XI EV-optimal (aturan auto-sub persis), kapten & wakil EV, urutan bench, rencana transfer multi-GW (FT & hit), estimasi EV chip (TC/BB/FH/WC), dan peringatan status pemain
+- **🎯 Rencana Aksi (halaman baru)** - semua keputusan GW ini dalam satu layar: XI EV-optimal (aturan auto-sub persis), kapten & wakil (proyeksi; EV sebagai pembanding risiko), urutan bench, rencana transfer multi-GW (FT & hit), estimasi EV chip (TC/BB/FH/WC), dan peringatan status pemain
 - **Beranda** - Info Gameweek & deadline, rekomendasi kapten (+ **EV Monte Carlo**), tabel FDR (tingkat kesulitan lawan), top-10 proyeksi poin, ringkasan akurasi model
 - **Player Explorer** - Jelajahi 600+ pemain, filter posisi/tim/harga/status, detail proyeksi + tren form 8 GW terakhir, kolom xGI/90 dan CS probability
-- **Kapten & Transfer** - Kandidat kapten terbaik (**+ simulasi Monte Carlo kapten/wakil berbasis EV & risiko blank**), value picks (poin per £1juta), fixture ticker (FDR 6 GW ke depan), differential picks, pemain berisiko cedera, dan **rekomendasi transfer berbasis cedera & peluang main**
+- **Kapten & Transfer** - Kandidat kapten (default proyeksi; mode Seimbang/Aman/Agresif memakai **EV & risiko blank**), value picks (poin per £1juta), fixture ticker (FDR 6 GW ke depan), differential picks, pemain berisiko cedera, dan **rekomendasi transfer berbasis cedera & peluang main**
 - **Transfer karena cedera** - gabungan status cedera/suspended, kabar resmi FPL, peluang main GW ini & GW depan, plus pengganti terbaik dan gain 3 GW. Pemain masuk dengan peluang 0% otomatis tidak disarankan
 - **Team Builder** - Masukkan skuad 15 pemain Anda (budget £100m), optimasi XI terbaik (tampilan lapangan) + kapten + saran transfer multi-GW + hit calculator
 - **Drag & Drop Skuad** - susun 15 pemain dengan menggeser kartu pemain dari daftar kandidat ke posisi GK/DEF/MID/FWD, lengkap dengan validasi budget, kuota posisi, dan maksimal 3 pemain per klub. Tersedia juga mode Daftar (multiselect) sebagai fallback
 - **Drag & Drop Pitch** - tukar starter ↔ bench langsung di gambar lapangan, atur urutan sub, dan kembalikan ke XI otomatis kapan saja. Formasi dan aturan kiper divalidasi di browser + Python
+- **Scout Selection Comparison** - bandingkan XI Anda dan Auto XI dengan Scout Selection resmi tiap Gameweek: kesamaan XI, captain, formasi, proyeksi, dan Scout watchlist. Artikel diambil dari API konten resmi Premier League dengan cache 6 jam
 - **Chip Strategi** - Rekomendasi kapan memakai Triple Captain, Bench Boost, Wildcard, & Free Hit — termasuk chip sequence planner
 - **Akurasi Model** - Evaluasi akurasi proyeksi vs skor aktual: MAE, RMSE, breakdown per posisi & FDR, saran penyesuaian bobot
 - **Rencana 3 GW (Team Builder)** - Proyeksi & XI terbaik untuk 3 Gameweek ke depan; XI boleh dirotasi gratis, transfer diminimalkan
@@ -29,6 +41,31 @@ streamlit run app.py
 ```
 
 Buka `http://localhost:8501` di browser.
+
+### Dashboard React + shadcn/ui (baru)
+
+Frontend baru ada di `web/` (React + Vite + Tailwind + komponen shadcn-style), backend JSON di `api/` (FastAPI). Cara tercepat:
+
+```bash
+.venv/bin/pip install -r requirements.txt
+./scripts/run_web.sh
+```
+
+Buka `http://localhost:8000`.
+
+Untuk development:
+
+```bash
+# terminal 1 — backend
+.venv/bin/uvicorn api.main:app --reload --port 8000
+
+# terminal 2 — frontend dengan proxy /api ke backend
+cd web
+npm install
+npm run dev
+```
+
+Build production: `cd web && npm run build`, lalu jalankan `./scripts/run_web.sh`.
 
 ## Cara Kerja Mesin Prediksi (Enhanced)
 
@@ -77,9 +114,12 @@ nyata** (`fpl/teamform.py`):
   rata-rata liga (anti-overreaction 1-2 laga), lalu dinormalisasi (rata-rata = 1.0).
 - **Fixture multiplier dinamis**: rasio attack tim vs defence lawan → koreksi
   perkalian di sekitar multiplier FDR (bobot data aktual naik seiring jumlah laga).
+  Simulator memakai multiplier yang sama (bukan lambda mentah) agar EV dan
+  proyeksi tidak saling bertentangan.
 - **CS probability terkali-brasi**: model `exp(-λ)` dengan λ = ekspektasi gol
   lawan (L kandang/tandang × attack lawan × kebocoran pertahanan tim), diskalakan
-  ke clean-sheet rate aktual liga — menggantikan rasio linier lama.
+  ke clean-sheet rate aktual liga. Sinyal dinamis hanya diberi bobot kecil
+  (`CS_DYNAMIC_WEIGHT = 0.25`) sampai terbukti mengalahkan prior FDR.
 - Degradasi aman: tanpa data cukup, semua kembali ke perilaku FDR lama.
 
 ## Simulasi Monte Carlo — Kapten, Wakil, XI & EV (Bukan Sekadar Proyeksi)
@@ -93,14 +133,17 @@ nyata** (`fpl/teamform.py`):
   posisi) dan **DefCon** ikut disimulasikan; menit main dari expected-minutes
   per pemain (`player_history`) dengan fallback musiman; clean sheet, saves &
   bonus (draw berbobot, ikut sinyal DefCon) disimulasikan.
-- **Kapten & Wakil**: EV kapten = 2× poin bila kapten main; bila blank → 2× poin
-  wakil (VC) yang otomatis menggantikannya.
+- **Kapten & Wakil**: rekomendasi default memakai **proyeksi poin** (konsisten
+  dengan Beranda); simulasi Monte Carlo menyediakan **EV kapten = 2× poin bila
+  kapten main**, dan bila blank → 2× poin wakil (VC) yang otomatis menggantikannya.
+  Mode Seimbang/Aman/Agresif di halaman Kapten memakai EV/varians sebagai pembanding.
 - **XI & urutan bench EV-optimal dengan aturan auto-sub resmi**: setelah satu
   simulasi skuad, semua kombinasi formasi dievaluasi *setelah* auto-sub
-  (GK↔GK, urutan bench 1-3, formasi tetap valid) — XI dipilih dari **EV**, bukan
-  jumlah proyeksi (biasanya +1..4 poin/GW).
+  (GK↔GK, urutan bench 1-3, formasi tetap valid) — XI dipilih dari **EV**.
+  Rata-rata simulasi dikalibrasi ke proyeksi poin yang ditampilkan, sehingga
+  simulasi menambah distribusi/risiko, bukan mean forecast kedua yang berbeda.
 - Output: EV per kandidat kapten, peluang main/blank, rentang p10–p90, EV XI,
-  EV tiap pemain bench.
+  EV tiap pemain bench. Bonus memakai 3/2/1 poin resmi; penalti gagal −2.
 - Ditampilkan di **Beranda** (ringkas), **Kapten & Transfer** (detail), dan
   **Rencana Aksi** (XI + bench + kapten final), memakai skuad tersimpan Anda.
 - Rencana 3 GW (`horizon.py`) konsisten dengan model utama: bobot aktif
@@ -165,7 +208,8 @@ Data cedera dan peluang main diambil otomatis dari `bootstrap-static` FPL (tanpa
 - **Metrik**: MAE (Mean Absolute Error), RMSE, breakdown per posisi (GK/DEF/MID/FWD) dan per FDR (1-5).
 - **Trend**: Chart akurasi sepanjang musim — apakah model semakin baik?
 - **Weight Suggestions**: Setelah 3+ GW, sistem otomatis menyarankan penyesuaian bobot jika FDR terlalu agresif atau CS bonus terlalu tinggi.
-- Data di `data/accuracy.json`.
+- **Akurasi keputusan**: hit-rate kapten (return/haul/blank), top-10 return rate, dan tracking rekomendasi transfer (win/loss/net poin) yang dicatat otomatis sebelum deadline lalu dievaluasi setelah GW selesai.
+- Data di `data/accuracy.json`, rekomendasi keputusan di `data/recommendations.json`.
 
 ## Rencana Multi-Gameweek (Minimalkan Transfer)
 
@@ -178,7 +222,7 @@ Data cedera dan peluang main diambil otomatis dari `bootstrap-static` FPL (tanpa
 
 Halaman **🎯 Rencana Aksi** (paling atas di sidebar) merangkum semua keputusan GW berikutnya:
 
-1. **XI EV-optimal** dengan aturan auto-sub + formasi terbaik + **kapten & wakil berbasis EV** (termasuk risiko blank dan rentang p10–p90).
+1. **XI EV-optimal** dengan aturan auto-sub + formasi terbaik + **kapten & wakil berbasis proyeksi** (EV, risiko blank, dan rentang p10–p90 ditampilkan sebagai pembanding).
 2. **Urutan bench** final (GK cadangan slot 4) beserta EV per pemain bench.
 3. **Rencana transfer multi-GW** dengan FT, hit, harga jual, bank nyata dari tim tersinkron.
 4. **Estimasi EV chip** (TC/BB/FH/WC) untuk GW ini + status chip 2 set (set-1 hangus di GW19).
@@ -229,6 +273,19 @@ npm install
 npm run build
 ```
 
+## Scout Selection Resmi (Pembanding Team Builder)
+
+Team Builder menampilkan **Scout Selection** resmi Premier League sebagai pembanding, bukan pengganti model:
+
+- Sumber: API konten resmi Premier League dengan tag `franchise:fpl-scout-picks`; artikelnya juga tersedia di `premierleague.com/en/news/...`.
+- Parser mengambil 11 nama + tim + harga dari heading artikel, lalu memetakan ke `element_id` FPL dengan alias nama, tim, dan harga.
+- Yang ditampilkan: formasi, captain/wakil, kesamaan dengan XI Anda, kesamaan dengan Auto XI, proyeksi model kedua XI, pemain yang hanya dipilih Scout, dan Scout watchlist.
+- Badge **SCOUT** muncul di player picker dan kartu transfer jika artikel GW berjalan sudah terbit.
+- Jika Scout Selection GW berjalan belum dirilis (biasanya terbit mendekati deadline), aplikasi menampilkan edisi GW terakhir dengan peringatan jelas.
+- Cache: `data/scout_selection.json` (TTL 6 jam). Tombol **Ambil ulang Scout Selection** memaksa refresh.
+- Proyeksi/EV model **tidak diubah** oleh Scout Selection; Scout hanya menjadi sinyal pembanding dan watchlist. Ini menghindari bias dan double-counting.
+- Pemain yang tidak berhasil dipetakan ditampilkan sebagai peringatan, tidak dipaksa masuk.
+
 ## Perencanaan Transfer (FT, Hit & Harga Jual)
 
 `fpl/planner.py` menggantikan heuristik lama dengan keputusan legal & optimal:
@@ -248,7 +305,7 @@ npm run build
 
 `fpl/chips_ev.py` menghitung nilai chip memakai simulator & planner:
 
-- **TC** = EV poin ekstra dari 3× kapten alih-alih 2× (termasuk asuransi wakil).
+- **TC** = EV poin ekstra dari 3× kapten alih-alih 2× (kapten default proyeksi; EV/vice sebagai pembanding).
 - **BB** = EV total 15 pemain − EV XI auto-sub (persis poin tambahan dari bench).
 - **FH** = XI terbaik pasar (MILP, budget harga jual + bank) − XI skuad sekarang.
 - **WC** = total horizon skuad optimal − skuad sekarang (harga jual + bank).
@@ -289,3 +346,31 @@ Data di-cache lokal di `data/cache.json` (TTL 1 jam). Klik **"Segarkan Data"** d
 - Tidak ada tools yang bisa menjamin poin tinggi; tools ini menyediakan keputusan berbasis data terbaik.
 - Skuad Team Builder tersimpan lokal di `data/squad.json`.
 - Accuracy tracking dimulai sejak GW pertama data disimpan; butuh 3-5 GW untuk analisis bermakna.
+
+## Tampilan Sederhana (Mode Pemula)
+
+- Sidebar utama: **Minggu Ini · Skuad Saya · Cari Pemain · Performa · Lab & Chip**. Halaman lain ada di menu **Lainnya**.
+- **Mode Pemula (default)** hanya menampilkan keputusan, alasan singkat, dan badge keyakinan. Angka teknis (EV, p10–p90, xGI, DefCon, MAE, top-K, ML, kalibrasi) disembunyikan.
+- **Mode Analis** menampilkan semua metrik dan alat eksperimen seperti sebelumnya.
+- **Kamus FPL** menjelaskan istilah dalam bahasa manusia.
+- Halaman **Minggu Ini** hanya berisi 4 kartu keputusan (kapten, transfer, chip, peringatan) + XI/bench.
+- Detail angka selalu tersedia di `[Lihat alasan]` / `[Detail angka]`, jadi tidak ada fitur yang hilang.
+
+## Peningkatan Terbaru (Fase 0–4)
+
+- **Snapshot bertimestamp**: proyeksi disimpan di `data/snapshots/gw_<id>/` setiap refresh (throttled 5 menit). Evaluasi memakai snapshot terakhir sebelum deadline, bukan snapshot pertama.
+- **Actual stats lengkap**: `accuracy.json` menyimpan menit, gol, assist, CS, bonus, BPS, DefCon, saves, dan kartu — bukan hanya total poin.
+- **Metrik keputusan**: MAE/RMSE, bias, top-K bias, kalibrasi desil, Spearman, dan captain regret proxy di halaman **Akurasi Model**.
+- **Recent form aktif**: `player_history` memakai TTL 7 hari + cek GW terakhir, dan model memakai `exp_minutes`, `rec_form`, `rec_xgi90`, `rec_xg90`, `rec_xa90`.
+- **Kalibrasi multi-metode**: linear dan top-end shrink divalidasi leave-one-GW-out; hanya aktif jika menang out-of-sample.
+- **Team strength Poisson**: attack/defence opponent-adjusted dengan home advantage, bukan rasio gol mentah.
+- **Simulator**: pakai recent xG/xA, komponen biaya per komponen, p_haul/standard error, dan **fix clean sheet** untuk lawan yang tidak ada di skuad.
+- **Planner**: nilai kapten ikut dihitung, ambang gain lebih konservatif, hit hanya jika net gain cukup.
+- **Chip calendar**: tabel peluang TC/BB/FH/WC 12 GW ke depan di halaman Chip Strategi dan Rencana Aksi.
+- **Operasional**: `.venv/bin/python scripts/update_data.py --all` untuk refresh via cron (backfill history, DefCon, snapshot, accuracy, kalibrasi).
+
+### Catatan tuning
+
+- Bobot adaptif dan ML model **tidak diaktifkan otomatis** bila hasil validasi holdout lebih buruk dari baseline. Halaman Akurasi menampilkan statusnya.
+- Kalibrasi top-end memakai shrink moderat (di atas 4.0 poin) agar MAE membaik tanpa memotong upside kapten secara berlebihan.
+- Jika cache histori baru saja diperbarui, jalankan `python scripts/update_data.py --backfill` sekali agar semua pemain punya data per-GW.
